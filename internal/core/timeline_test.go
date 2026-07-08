@@ -52,7 +52,7 @@ func TestBuildVR9TracksPlacement(t *testing.T) {
 		{start: 12, end: 16, trimmed: 0, fileID: 0, code: 24},
 	}
 
-	tracks, devs := buildVR9Tracks(events, takes, SongRef{Number: 1, Name: "S"}, audioSpec{sampleRate: 44100, format: FormatMT2, clusterSize: blockSize})
+	tracks, devs := buildVR9Tracks(events, takes, SongRef{Number: 1, Name: "S"}, audioSpec{sampleRate: 44100, format: FormatMT2, clusterSize: blockSize}, false)
 	assert.Empty(t, devs)
 
 	byCode := map[[2]int]TrackResult{}
@@ -114,7 +114,7 @@ func TestBuildVR9TracksSkipsEmpty(t *testing.T) {
 	events := []vr9Event{{start: 12, end: 16, fileID: 0xA, code: 0}}
 	takes := map[uint16]PCM{0xA: decodeTake(t, mt2Bytes(0x11, 4))}
 
-	tracks, _ := buildVR9Tracks(events, takes, SongRef{Number: 1}, audioSpec{sampleRate: 44100, format: FormatMT2, clusterSize: blockSize})
+	tracks, _ := buildVR9Tracks(events, takes, SongRef{Number: 1}, audioSpec{sampleRate: 44100, format: FormatMT2, clusterSize: blockSize}, false)
 	require.Len(t, tracks, 1)
 	assert.Equal(t, 1, tracks[0].Track)
 	assert.Equal(t, 1, tracks[0].VTrack)
@@ -127,7 +127,7 @@ func TestBuildVR9TracksTruncatedTake(t *testing.T) {
 	events := []vr9Event{{start: 12, end: 16, fileID: 0xA, code: 0}}
 	takes := map[uint16]PCM{0xA: decodeTake(t, mt2Bytes(0x11, 2))}
 
-	tracks, devs := buildVR9Tracks(events, takes, SongRef{Number: 1}, audioSpec{sampleRate: 44100, format: FormatMT2, clusterSize: blockSize})
+	tracks, devs := buildVR9Tracks(events, takes, SongRef{Number: 1}, audioSpec{sampleRate: 44100, format: FormatMT2, clusterSize: blockSize}, false)
 	require.Len(t, tracks, 1)
 	require.Len(t, tracks[0].PCM.Samples, 64)
 	assert.Equal(t, takes[0xA].Samples, tracks[0].PCM.Samples[:32])

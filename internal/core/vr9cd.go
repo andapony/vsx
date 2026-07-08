@@ -189,7 +189,7 @@ type vr9Event struct {
 // replayed by the shared timeline kernel with the VR9 origin. A v-track with no
 // take-bearing record yields no TrackResult. The VR9 log carries no per-track
 // name, so results carry the default (empty) Name.
-func buildVR9Tracks(events []vr9Event, takes map[uint16]PCM, song SongRef, aud audioSpec) ([]TrackResult, []Deviation) {
+func buildVR9Tracks(events []vr9Event, takes map[uint16]PCM, song SongRef, aud audioSpec, stereo bool) ([]TrackResult, []Deviation) {
 	// Group events by v-track code, preserving log order, and remember the
 	// code ordering so output is deterministic.
 	byCode := map[int][]vr9Event{}
@@ -201,7 +201,7 @@ func buildVR9Tracks(events []vr9Event, takes map[uint16]PCM, song SongRef, aud a
 		byCode[e.code] = append(byCode[e.code], e)
 	}
 
-	var out []TrackResult
+	var built []builtTrack
 	var devs []Deviation
 	for _, code := range codeOrder {
 		evs := make([]timelineEvent, len(byCode[code]))
@@ -213,10 +213,10 @@ func buildVR9Tracks(events []vr9Event, takes map[uint16]PCM, song SongRef, aud a
 		tr, ok, d := buildVTrack(evs, takes, vr9OriginFrames, song, track, vtrack, "", aud)
 		devs = append(devs, d...)
 		if ok {
-			out = append(out, tr)
+			built = append(built, builtTrack{result: tr, events: evs})
 		}
 	}
-	return out, devs
+	return pairTracks(built, stereo), devs
 }
 
 // vr9RecordSize is the fixed VS-880EX event-record length (§1/§7).
@@ -284,7 +284,7 @@ func groupSongs(files []fileEntry) []songGroup {
 // devs immediately and those found during replay as each song is consumed. The
 // iterator processes one song at a time so a large Source is never fully
 // materialized (bounded memory, per the foundation).
-func extractVR9(img cdSource, dec Decoder, devs *[]Deviation) (iter.Seq2[TrackResult, error], error) {
+func extractVR9(img cdSource, dec Decoder, devs *[]Deviation, stereo bool) (iter.Seq2[TrackResult, error], error) {
 	files, wdevs, err := walkVR9(img)
 	if err != nil {
 		return nil, err
@@ -294,7 +294,7 @@ func extractVR9(img cdSource, dec Decoder, devs *[]Deviation) (iter.Seq2[TrackRe
 
 	return func(yield func(TrackResult, error) bool) {
 		for _, g := range groups {
-			tracks, sdevs := extractSong(img, dec, g)
+			tracks, sdevs := extractSong(img, dec, g, stereo)
 			*devs = append(*devs, sdevs...)
 			for _, tr := range tracks {
 				if !yield(tr, nil) {
@@ -308,7 +308,7 @@ func extractVR9(img cdSource, dec Decoder, devs *[]Deviation) (iter.Seq2[TrackRe
 // extractSong replays one song's event log against its takes into per-v-track
 // results. Takes are resolved by FileID (§5.7: VR9 CD FileIDs equal the HDD FAT
 // start clusters the event records carry) and decoded on demand.
-func extractSong(img cdSource, dec Decoder, g songGroup) ([]TrackResult, []Deviation) {
+func extractSong(img cdSource, dec Decoder, g songGroup, stereo bool) ([]TrackResult, []Deviation) {
 	loc := fmt.Sprintf("song %d", g.number)
 	elst, ok := findEventList(g.files)
 	if !ok {
@@ -336,7 +336,7 @@ func extractSong(img cdSource, dec Decoder, g songGroup) ([]TrackResult, []Devia
 	devs = append(devs, takeDevs...)
 
 	tracks, tlDevs := buildVR9Tracks(events, takes, SongRef{Number: int(g.number), Name: g.name},
-		audioSpec{sampleRate: sampleRate, format: format, clusterSize: blockSize})
+		audioSpec{sampleRate: sampleRate, format: format, clusterSize: blockSize}, stereo)
 	devs = append(devs, tlDevs...)
 	return tracks, devs
 }

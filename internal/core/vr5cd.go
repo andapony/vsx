@@ -219,18 +219,18 @@ const vr5Origin = 0
 // populated v-track (§8.1), reusing the shared timeline kernel with the VR5
 // origin. Track/v-track come from table position; a user-assigned track name is
 // carried into the result so the writer can append it to the filename.
-func buildVR5Tracks(entries []vr5Entry, takes map[uint16]PCM, song SongRef, aud audioSpec) ([]TrackResult, []Deviation) {
-	var out []TrackResult
+func buildVR5Tracks(entries []vr5Entry, takes map[uint16]PCM, song SongRef, aud audioSpec, stereo bool) ([]TrackResult, []Deviation) {
+	var built []builtTrack
 	var devs []Deviation
 	for _, ent := range entries {
 		tr, ok, d := buildVTrack(ent.events, takes, vr5Origin, song, ent.track, ent.vtrack,
 			userTrackName(ent.name), aud)
 		devs = append(devs, d...)
 		if ok {
-			out = append(out, tr)
+			built = append(built, builtTrack{result: tr, events: ent.events})
 		}
 	}
-	return out, devs
+	return pairTracks(built, stereo), devs
 }
 
 // userTrackName returns a table entry's name only when it is user-assigned
@@ -257,7 +257,7 @@ func userTrackName(name string) string {
 // and replay deviations as each song is consumed. Files are grouped into songs
 // by header song name (§5.4), one song processed at a time so a large Source is
 // never fully materialized.
-func extractVR5(img cdSource, dec Decoder, devs *[]Deviation) (iter.Seq2[TrackResult, error], error) {
+func extractVR5(img cdSource, dec Decoder, devs *[]Deviation, stereo bool) (iter.Seq2[TrackResult, error], error) {
 	files, wdevs, err := walkVR5(img)
 	if err != nil {
 		return nil, err
@@ -267,7 +267,7 @@ func extractVR5(img cdSource, dec Decoder, devs *[]Deviation) (iter.Seq2[TrackRe
 
 	return func(yield func(TrackResult, error) bool) {
 		for i, g := range groups {
-			tracks, sdevs := extractVR5Song(img, dec, g, i)
+			tracks, sdevs := extractVR5Song(img, dec, g, i, stereo)
 			*devs = append(*devs, sdevs...)
 			for _, tr := range tracks {
 				if !yield(tr, nil) {
@@ -300,7 +300,7 @@ func groupVR5Songs(files []fileEntry) []songGroup {
 // per-v-track results. The song number is read from the song's SONG file
 // (§4.4); takes are resolved by FileID, which on VR5 CD is the take's archive
 // filename number (§5.7).
-func extractVR5Song(img cdSource, dec Decoder, g songGroup, index int) ([]TrackResult, []Deviation) {
+func extractVR5Song(img cdSource, dec Decoder, g songGroup, index int, stereo bool) ([]TrackResult, []Deviation) {
 	number, ndevs := vr5SongNumber(img, g.files, index)
 	devs := ndevs
 	loc := fmt.Sprintf("song %d", number)
@@ -334,7 +334,7 @@ func extractVR5Song(img cdSource, dec Decoder, g songGroup, index int) ([]TrackR
 	devs = append(devs, takeDevs...)
 
 	tracks, tlDevs := buildVR5Tracks(entries, takes, SongRef{Number: number, Name: g.name},
-		audioSpec{sampleRate: sampleRate, format: format, clusterSize: blockSize})
+		audioSpec{sampleRate: sampleRate, format: format, clusterSize: blockSize}, stereo)
 	devs = append(devs, tlDevs...)
 	return tracks, devs
 }

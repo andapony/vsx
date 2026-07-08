@@ -116,6 +116,83 @@ func TestEncode24BitOddLengthEmitsPadByte(t *testing.T) {
 	assert.Len(t, p.data, 9)
 }
 
+// TestEncodeStereoInterleaves verifies that EncodeStereo writes a canonical
+// two-channel RIFF/WAVE: the header declares 2 channels with the matching
+// block align and byte rate, and the data chunk holds one L,R sample frame per
+// index — left channel first — so a §8.4 stereo pair round-trips interleaved.
+func TestEncodeStereoInterleaves(t *testing.T) {
+	left := []int32{0, 100, -100, 32767}
+	right := []int32{1, -1, 200, -32768}
+	out, err := EncodeStereo(left, right, 44100, 16)
+	require.NoError(t, err)
+	p := parseWAV(t, out)
+
+	assert.EqualValues(t, 1, p.audioFormat, "audioFormat should be PCM")
+	assert.EqualValues(t, 2, p.numChannels, "stereo")
+	assert.EqualValues(t, 44100, p.sampleRate)
+	assert.EqualValues(t, 16, p.bitsPerSample)
+	assert.EqualValues(t, 4, p.blockAlign, "2 channels × 2 bytes")
+	assert.EqualValues(t, 44100*4, p.byteRate)
+	require.Len(t, p.data, len(left)*4, "one L,R frame of 4 bytes per index")
+
+	for i := range left {
+		gotL := int16(binary.LittleEndian.Uint16(p.data[i*4 : i*4+2]))
+		gotR := int16(binary.LittleEndian.Uint16(p.data[i*4+2 : i*4+4]))
+		assert.EqualValues(t, left[i], gotL, "left sample %d", i)
+		assert.EqualValues(t, right[i], gotR, "right sample %d", i)
+	}
+}
+
+// TestEncodeStereo24Bit verifies the 24-bit interleaved path: 3-byte L,R frames
+// with the declared depth, block align, and byte rate, exercising the range
+// extremes to confirm sign handling in both channels.
+func TestEncodeStereo24Bit(t *testing.T) {
+	left := []int32{8388607, -8388608}
+	right := []int32{-1, 0x123456}
+	out, err := EncodeStereo(left, right, 48000, 24)
+	require.NoError(t, err)
+	p := parseWAV(t, out)
+
+	assert.EqualValues(t, 2, p.numChannels)
+	assert.EqualValues(t, 24, p.bitsPerSample)
+	assert.EqualValues(t, 6, p.blockAlign, "2 channels × 3 bytes")
+	assert.EqualValues(t, 48000*6, p.byteRate)
+	require.Len(t, p.data, len(left)*6)
+
+	sample24 := func(b []byte) int32 {
+		v := int32(b[0]) | int32(b[1])<<8 | int32(b[2])<<16
+		if v&0x800000 != 0 {
+			v |= ^int32(0xffffff)
+		}
+		return v
+	}
+	for i := range left {
+		assert.EqualValues(t, left[i], sample24(p.data[i*6:i*6+3]), "left %d", i)
+		assert.EqualValues(t, right[i], sample24(p.data[i*6+3:i*6+6]), "right %d", i)
+	}
+}
+
+// TestEncodeStereoPadsShorterChannel verifies that channels of unequal length
+// are padded with trailing silence to the longer one, so interleaving never
+// runs off the end of the shorter channel (the two channels of a genuine §8.4
+// pair are equal-length by construction, but the encoder is defensive).
+func TestEncodeStereoPadsShorterChannel(t *testing.T) {
+	left := []int32{5, 6, 7}
+	right := []int32{9}
+	out, err := EncodeStereo(left, right, 44100, 16)
+	require.NoError(t, err)
+	p := parseWAV(t, out)
+
+	require.Len(t, p.data, 3*4, "framed to the longer channel")
+	// Frame 0: (5, 9); frames 1 and 2: right padded to silence.
+	assert.EqualValues(t, 5, int16(binary.LittleEndian.Uint16(p.data[0:2])))
+	assert.EqualValues(t, 9, int16(binary.LittleEndian.Uint16(p.data[2:4])))
+	assert.EqualValues(t, 6, int16(binary.LittleEndian.Uint16(p.data[4:6])))
+	assert.EqualValues(t, 0, int16(binary.LittleEndian.Uint16(p.data[6:8])), "right padded")
+	assert.EqualValues(t, 7, int16(binary.LittleEndian.Uint16(p.data[8:10])))
+	assert.EqualValues(t, 0, int16(binary.LittleEndian.Uint16(p.data[10:12])), "right padded")
+}
+
 // TestEncodeSampleRates verifies that every supported sample rate (32/44.1/48
 // kHz) and bit depth (16/24) is written faithfully into the header, with the
 // byte rate consistent with the declared rate and depth.
