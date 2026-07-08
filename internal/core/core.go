@@ -31,6 +31,13 @@ type Options struct {
 	// "vr5" force the CD path as that machine when no archive signature is found
 	// (§5.2). It is the --as override.
 	As string
+
+	// Stereo enables the conservative §8.4 stereo-pair heuristic: two adjacent
+	// physical tracks that each have exactly one populated v-track with matching
+	// event geometry are emitted as one interleaved stereo TrackResult instead of
+	// two monos. Off by default; unpaired v-tracks always stay mono. It is the
+	// --stereo flag.
+	Stereo bool
 }
 
 // Severity ranks how far a Deviation departs from the spec.
@@ -81,13 +88,24 @@ type Take struct {
 
 // TrackResult is one populated (song, v-track): its decoded mono PCM plus the
 // resolved metadata that produced it. Empty v-tracks yield no TrackResult.
+//
+// A §8.4 stereo pair (Options.Stereo) is carried as a single TrackResult with
+// Right non-nil: PCM is then the left channel (the lower-numbered physical
+// track, named by Track), Right the right channel, and PairTrack the higher
+// track. When Right is nil the result is an ordinary mono v-track.
 type TrackResult struct {
 	Song   SongRef
-	Track  int    // physical track index (1-based)
+	Track  int    // physical track index (1-based); the left/lower track of a stereo pair
 	VTrack int    // virtual-track index within the track
 	Name   string // user-assigned track name, "" when the name is the default/blank (§6.1)
 	PCM    PCM
 	Take   Take
+
+	// Right, when non-nil, is the right channel of a §8.4 stereo pair; PairTrack
+	// is that channel's (higher) physical track index. Both are zero/nil for a
+	// mono result.
+	Right     *PCM
+	PairTrack int
 }
 
 // Result is the streaming outcome of an extraction. Tracks yields per-(song,
@@ -159,7 +177,7 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 	if forceHDD || !forceCD {
 		vol, herr := hdd.Open(f, info.Size())
 		if herr == nil {
-			return newHDDResult(f, vol, devs)
+			return newHDDResult(f, vol, devs, opts.Stereo)
 		}
 		if forceHDD {
 			f.Close()
@@ -197,9 +215,9 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 	var inner iter.Seq2[TrackResult, error]
 	switch p.machine {
 	case machineVR9:
-		inner, err = extractVR9(img, NewDecoder(), devs)
+		inner, err = extractVR9(img, NewDecoder(), devs, opts.Stereo)
 	case machineVR5:
-		inner, err = extractVR5(img, NewDecoder(), devs)
+		inner, err = extractVR5(img, NewDecoder(), devs, opts.Stereo)
 	default:
 		f.Close()
 		return Result{}, fmt.Errorf("core: source identified but not yet supported by this build; machine=%v", p.machine)
@@ -236,9 +254,9 @@ func extractSet(dir string, opts Options) (Result, error) {
 	var inner iter.Seq2[TrackResult, error]
 	switch set.machine {
 	case machineVR9:
-		inner, err = extractVR9(set.reader, NewDecoder(), devs)
+		inner, err = extractVR9(set.reader, NewDecoder(), devs, opts.Stereo)
 	case machineVR5:
-		inner, err = extractVR5(set.reader, NewDecoder(), devs)
+		inner, err = extractVR5(set.reader, NewDecoder(), devs, opts.Stereo)
 	default:
 		closeAll(set.files)
 		return Result{}, fmt.Errorf("core: backup set machine not supported by this build; machine=%v", set.machine)
@@ -253,8 +271,8 @@ func extractSet(dir string, opts Options) (Result, error) {
 // newHDDResult builds a streaming Result over a Roland live disk, keeping the
 // Source file open for the lifetime of the track iterator and closing it when
 // iteration ends — the same ownership contract as the CD path.
-func newHDDResult(f *os.File, vol *hdd.Volume, devs *[]Deviation) (Result, error) {
-	inner, err := extractHDD(vol, NewDecoder(), devs)
+func newHDDResult(f *os.File, vol *hdd.Volume, devs *[]Deviation, stereo bool) (Result, error) {
+	inner, err := extractHDD(vol, NewDecoder(), devs, stereo)
 	if err != nil {
 		f.Close()
 		return Result{}, err

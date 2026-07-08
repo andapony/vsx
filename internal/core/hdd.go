@@ -20,14 +20,14 @@ import (
 // only steps that differ from CD; event-list parsing and timeline replay are the
 // shared §6/§8 kernels, since the HDD EVENTLST formats (§4.5/§4.6) are
 // byte-identical to their CD counterparts.
-func extractHDD(vol *hdd.Volume, dec Decoder, devs *[]Deviation) (iter.Seq2[TrackResult, error], error) {
+func extractHDD(vol *hdd.Volume, dec Decoder, devs *[]Deviation, stereo bool) (iter.Seq2[TrackResult, error], error) {
 	songs, err := vol.Songs()
 	if err != nil {
 		return nil, fmt.Errorf("core: enumerating HDD songs: %w", err)
 	}
 	return func(yield func(TrackResult, error) bool) {
 		for _, s := range songs {
-			tracks, sdevs := extractHDDSong(dec, s)
+			tracks, sdevs := extractHDDSong(dec, s, stereo)
 			*devs = append(*devs, sdevs...)
 			for _, tr := range tracks {
 				if !yield(tr, nil) {
@@ -43,7 +43,7 @@ func extractHDD(vol *hdd.Volume, dec Decoder, devs *[]Deviation) (iter.Seq2[Trac
 // machine's form (§4.5 positional table / §4.6 flat log), resolve and integrity-
 // check the referenced takes (§4.3/§8.3), and build the timeline with the shared
 // kernel using the partition's BPB cluster size (§4.2, for MT2 page-padding).
-func extractHDDSong(dec Decoder, song hdd.Song) ([]TrackResult, []Deviation) {
+func extractHDDSong(dec Decoder, song hdd.Song, stereo bool) ([]TrackResult, []Deviation) {
 	files, err := song.Files()
 	if err != nil {
 		return nil, []Deviation{{Location: song.Name, SpecRef: "§4.3", Severity: SeverityError,
@@ -94,7 +94,7 @@ func extractHDDSong(dec Decoder, song hdd.Song) ([]TrackResult, []Deviation) {
 		refs, counts := gatherVR5Refs(entries)
 		takes, tdevs := decodeHDDTakes(files, dec, refs, counts, format, loc)
 		devs = append(devs, tdevs...)
-		tracks, tldevs := buildVR5Tracks(entries, takes, ref, aud)
+		tracks, tldevs := buildVR5Tracks(entries, takes, ref, aud, stereo)
 		return tracks, append(devs, tldevs...)
 	case "VR9":
 		events, edevs := parseVR9Log(eldata)
@@ -102,7 +102,7 @@ func extractHDDSong(dec Decoder, song hdd.Song) ([]TrackResult, []Deviation) {
 		refs, counts := gatherVR9Refs(events)
 		takes, tdevs := decodeHDDTakes(files, dec, refs, counts, format, loc)
 		devs = append(devs, tdevs...)
-		tracks, tldevs := buildVR9Tracks(events, takes, ref, aud)
+		tracks, tldevs := buildVR9Tracks(events, takes, ref, aud, stereo)
 		return tracks, append(devs, tldevs...)
 	default:
 		return nil, append(devs, Deviation{Location: loc, SpecRef: "§4.3", Severity: SeverityError,

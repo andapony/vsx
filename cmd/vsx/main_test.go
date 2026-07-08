@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
@@ -176,6 +177,59 @@ func TestDeviationFlipsExitCodeButStillWrites(t *testing.T) {
 	codeQ, _, stderrQ := runCLI("-q", "-o", t.TempDir(), src)
 	assert.Equal(t, exitDeviations, codeQ)
 	assert.NotContains(t, stderrQ, "deviation")
+}
+
+// stereoPairDisc is a one-song VR9 archive whose tracks 1 and 2 each carry a
+// single populated v-track with identical event geometry — a genuine §8.4
+// stereo pair — used to exercise the --stereo CLI path.
+func stereoPairDisc() vsfix.Disc {
+	return vsfix.Disc{
+		SetID: [4]byte{1, 2, 3, 4},
+		Songs: []vsfix.Song{{
+			Number: 2, Name: "SONG TWO",
+			Takes: []vsfix.Take{
+				{FileID: 0x0100, Name: "TAKE0100", MT2: make([]byte, 12*4)},
+				{FileID: 0x0101, Name: "TAKE0101", MT2: make([]byte, 12*4)},
+			},
+			Events: []vsfix.Event{
+				{Start: 12, End: 16, FileID: 0x0100, Track: 1, VTrack: 1},
+				{Start: 12, End: 16, FileID: 0x0101, Track: 2, VTrack: 1},
+			},
+		}},
+	}
+}
+
+// TestStereoFlagPairsAdjacentTracks verifies the issue #8 acceptance criteria at
+// the CLI: without --stereo the matched adjacent tracks are two mono WAVs; with
+// --stereo they become one interleaved stereo WAV (left = the lower track), the
+// two monos are gone, and the formed pair is reported on stderr.
+func TestStereoFlagPairsAdjacentTracks(t *testing.T) {
+	src := writeDisc(t, stereoPairDisc())
+
+	// Off by default: one mono WAV per v-track.
+	outMono := t.TempDir()
+	code, _, stderr := runCLI("-o", outMono, src)
+	require.Equal(t, exitOK, code, "stderr: %s", stderr)
+	assert.FileExists(t, filepath.Join(outMono, "02 - SONG TWO", "T1-V1.wav"))
+	assert.FileExists(t, filepath.Join(outMono, "02 - SONG TWO", "T2-V1.wav"))
+	assert.Equal(t, 2, countWavs(t, outMono), "mono by default")
+
+	// With --stereo: the pair collapses to a single interleaved stereo file.
+	outStereo := t.TempDir()
+	code, stdout, stderr := runCLI("--stereo", "-o", outStereo, src)
+	require.Equal(t, exitOK, code, "stderr: %s", stderr)
+	stereoPath := filepath.Join(outStereo, "02 - SONG TWO", "T1+2-V1.wav")
+	assert.FileExists(t, stereoPath, "the pair is one stereo file named for both tracks")
+	assert.NoFileExists(t, filepath.Join(outStereo, "02 - SONG TWO", "T1-V1.wav"), "left mono is replaced")
+	assert.NoFileExists(t, filepath.Join(outStereo, "02 - SONG TWO", "T2-V1.wav"), "right mono is replaced")
+	assert.Equal(t, 1, countWavs(t, outStereo), "one file replaces the two monos")
+	assert.Contains(t, stdout, "T1+2-V1.wav", "manifest lists the stereo file")
+	assert.Contains(t, strings.ToLower(stderr), "pair", "the formed pair is reported")
+
+	// The written file really is a two-channel WAV.
+	b, err := os.ReadFile(stereoPath)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, binary.LittleEndian.Uint16(b[22:24]), "stereo: 2 channels")
 }
 
 // countWavs returns how many .wav files exist under dir, recursively — used to
