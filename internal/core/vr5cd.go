@@ -184,10 +184,11 @@ func parseVR5EventList(data []byte) ([]vr5Entry, []Deviation) {
 			}
 			r := data[off : off+vr5RecordSize]
 			evs = append(evs, timelineEvent{
-				start:   binary.BigEndian.Uint32(r[0x00:]),
-				end:     binary.BigEndian.Uint32(r[0x04:]),
-				trimmed: binary.BigEndian.Uint32(r[0x08:]),
-				fileID:  binary.BigEndian.Uint16(r[0x14:]),
+				start:        binary.BigEndian.Uint32(r[0x00:]),
+				end:          binary.BigEndian.Uint32(r[0x04:]),
+				trimmed:      binary.BigEndian.Uint32(r[0x08:]),
+				fileID:       binary.BigEndian.Uint16(r[0x14:]),
+				clusterCount: binary.BigEndian.Uint16(r[0x18:]),
 			})
 			off += vr5RecordSize
 		}
@@ -209,12 +210,12 @@ const vr5Origin = 0
 // populated v-track (§8.1), reusing the shared timeline kernel with the VR5
 // origin. Track/v-track come from table position; a user-assigned track name is
 // carried into the result so the writer can append it to the filename.
-func buildVR5Tracks(entries []vr5Entry, takes map[uint16]PCM, song SongRef, sampleRate int, format Format) ([]TrackResult, []Deviation) {
+func buildVR5Tracks(entries []vr5Entry, takes map[uint16]PCM, song SongRef, aud audioSpec) ([]TrackResult, []Deviation) {
 	var out []TrackResult
 	var devs []Deviation
 	for _, ent := range entries {
 		tr, ok, d := buildVTrack(ent.events, takes, vr5Origin, song, ent.track, ent.vtrack,
-			sampleRate, userTrackName(ent.name), format)
+			userTrackName(ent.name), aud)
 		devs = append(devs, d...)
 		if ok {
 			out = append(out, tr)
@@ -323,7 +324,8 @@ func extractVR5Song(img *cd.Image, dec Decoder, g songGroup, index int) ([]Track
 	takes, takeDevs := decodeTakes(img, dec, g.files, refs, format, loc)
 	devs = append(devs, takeDevs...)
 
-	tracks, tlDevs := buildVR5Tracks(entries, takes, SongRef{Number: number, Name: g.name}, sampleRate, format)
+	tracks, tlDevs := buildVR5Tracks(entries, takes, SongRef{Number: number, Name: g.name},
+		audioSpec{sampleRate: sampleRate, format: format, clusterSize: blockSize})
 	devs = append(devs, tlDevs...)
 	return tracks, devs
 }
