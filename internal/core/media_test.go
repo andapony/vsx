@@ -188,6 +188,146 @@ func TestHDDMediaStructuralInvariants(t *testing.T) {
 	}
 }
 
+// discGroup is one backup set discovered in the corpus: the ordered disc-dump
+// paths that share a set ID, with the machine their signature names.
+type discGroup struct {
+	setID   [4]byte
+	machine machine
+	paths   []string // one per disc, any order
+}
+
+// findMultiDiscSets groups the corpus's CD dumps by §5.2 set ID and returns the
+// groups holding more than one disc — the real multi-disc backup sets, without
+// hard-coding filenames or a directory convention. A set's discs may be spread
+// across the flat media directory, so grouping is by set ID, not by folder.
+func findMultiDiscSets(t *testing.T, dir string) []discGroup {
+	t.Helper()
+	groups := map[[4]byte]*discGroup{}
+	for _, pat := range []string{"*.bin", "*.img", "*.iso"} {
+		matches, _ := filepath.Glob(filepath.Join(dir, pat))
+		for _, m := range matches {
+			mach, h, ok := readDiscHeader(m)
+			if !ok {
+				continue
+			}
+			g := groups[h.SetID]
+			if g == nil {
+				g = &discGroup{setID: h.SetID, machine: mach}
+				groups[h.SetID] = g
+			}
+			g.paths = append(g.paths, m)
+		}
+	}
+	var out []discGroup
+	for _, g := range groups {
+		if len(g.paths) > 1 {
+			out = append(out, *g)
+		}
+	}
+	return out
+}
+
+// readDiscHeader opens a corpus file and reads its machine (from the archive
+// signature) and §5.2 set-membership header, reporting ok only for a readable CD
+// archive of a known machine.
+func readDiscHeader(path string) (machine, cd.ArchiveHeader, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return machineUnknown, cd.ArchiveHeader{}, false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return machineUnknown, cd.ArchiveHeader{}, false
+	}
+	img, err := cd.New(f, info.Size())
+	if err != nil {
+		return machineUnknown, cd.ArchiveHeader{}, false
+	}
+	sig, err := img.ReadUserData(0, 32)
+	if err != nil {
+		return machineUnknown, cd.ArchiveHeader{}, false
+	}
+	m := machineForSig(string(sig), "")
+	if m == machineUnknown {
+		return machineUnknown, cd.ArchiveHeader{}, false
+	}
+	h, err := img.ArchiveHeader()
+	if err != nil {
+		return machineUnknown, cd.ArchiveHeader{}, false
+	}
+	return m, h, true
+}
+
+// linkSetDir symlinks a set's disc dumps into a fresh temp directory so Extract
+// can group them as one Source — pointing directly at the flat corpus would mix
+// every set together.
+func linkSetDir(t *testing.T, g discGroup) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, p := range g.paths {
+		abs, err := filepath.Abs(p)
+		require.NoError(t, err)
+		require.NoError(t, os.Symlink(abs, filepath.Join(dir, filepath.Base(p))))
+	}
+	return dir
+}
+
+// TestMultiDiscMediaStructuralInvariants runs the extractor against real
+// multi-disc CD backup sets (when VSX_TEST_MEDIA is set) and asserts the §5.6
+// spanning invariants on genuine media. Two things must hold on a complete set:
+// every disc's data end is located by its §10 TDI filler signature (so the
+// junctions are computed against burned-data ends, not dump lengths), and the
+// stitched set extracts every v-track cleanly with no spanning-remainder or
+// missing-disc deviation — which can only happen if each spanned file was
+// reconstructed flush across its junction (byte-exactly). A mis-located boundary
+// or a dropped/duplicated junction byte would corrupt a take and surface here as
+// a decode failure or an out-of-grid v-track.
+func TestMultiDiscMediaStructuralInvariants(t *testing.T) {
+	dir := testutil.RequireMedia(t)
+	sets := findMultiDiscSets(t, dir)
+	if len(sets) == 0 {
+		t.Skipf("no multi-disc CD backup sets found under %s", dir)
+	}
+	for _, g := range sets {
+		// Filler signature: every disc of the set ends in a detectable §10 run,
+		// which is what the junction arithmetic is measured against.
+		for _, p := range g.paths {
+			f, err := os.Open(p)
+			require.NoError(t, err)
+			info, err := f.Stat()
+			require.NoError(t, err)
+			img, err := cd.New(f, info.Size())
+			require.NoError(t, err)
+			_, ok := img.FillerStart()
+			f.Close()
+			assert.True(t, ok, "%s: a finalized disc ends with a TDI filler run (§10)", filepath.Base(p))
+		}
+
+		r, err := Extract(linkSetDir(t, g), Options{})
+		require.NoError(t, err)
+		n := 0
+		for tr, err := range r.Tracks() {
+			require.NoError(t, err)
+			n++
+			assert.GreaterOrEqual(t, tr.Track, 1)
+			assert.LessOrEqual(t, tr.Track, 18, "no machine exceeds 18 physical tracks")
+			assert.GreaterOrEqual(t, tr.VTrack, 1)
+			assert.LessOrEqual(t, tr.VTrack, 16, "no machine exceeds 16 v-tracks per track")
+			assert.Contains(t, []int{16, 24}, tr.PCM.BitDepth)
+			assert.Positive(t, tr.Take.SampleRate)
+		}
+		assert.Positive(t, n, "a multi-disc set extracts at least one v-track")
+		// A complete set reconstructs every span flush: no remainder ran off the
+		// last disc and no disc index was missing.
+		for _, d := range r.Deviations() {
+			assert.NotEqual(t, "§5.6", d.SpecRef,
+				"complete set %s spanned cleanly, no §5.6 deviation: %s", setIDString(g.setID), d.Message)
+		}
+		t.Logf("%s (%d discs): %d v-tracks extracted", setIDString(g.setID), len(g.paths), n)
+	}
+}
+
 // TestVR9HDDtoCDCrossCheck is the ready, skipped cross-check slot the issue
 // calls for: when both an HDD image and a CD backup of the same song exist, the
 // two must extract to byte-identical PCM (§5.7). HDD extraction now exists (this

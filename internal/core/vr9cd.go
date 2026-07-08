@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"iter"
 	"strings"
-
-	"github.com/andapony/vsx/internal/cd"
 )
 
 // VS-880EX header-block field offsets, from the block start (§5.4).
@@ -31,6 +29,15 @@ const (
 	firstFileHeader = 0x10000
 )
 
+// vr9IdentityFields are the VS-880EX header byte ranges that a continuation
+// disc's repeated header must match for a spanned file (§5.6): the filename, the
+// FileID, and the u32 size.
+var vr9IdentityFields = [][2]int{
+	{offFilename, offFilename + 11},
+	{offFileID, offFileID + 2},
+	{offSize, offSize + 4},
+}
+
 // fileEntry is one enumerated on-disc file: where its data lives and the
 // identity fields that associate it to a song and to event records (§5.4).
 type fileEntry struct {
@@ -49,7 +56,7 @@ type fileEntry struct {
 // copies and song-boundary blocks that are not file headers. The walk ends at
 // the §10 filler run; a dump lacking it is reported as a truncated rip
 // (deviation) and walked to end-of-data.
-func walkVR9(img *cd.Image) ([]fileEntry, []Deviation, error) {
+func walkVR9(img cdSource) ([]fileEntry, []Deviation, error) {
 	var devs []Deviation
 	end, ok := img.FillerStart()
 	if !ok {
@@ -77,6 +84,8 @@ func walkVR9(img *cd.Image) ([]fileEntry, []Deviation, error) {
 		}
 		fe := parseHeader(hdr, udoff)
 		files = append(files, fe)
+		devs = append(devs, verifyJunction(img, hdr, fe.dataOff, fe.size, headerSpan,
+			vr9IdentityFields, "file "+strings.TrimRight(fe.filename, " "))...)
 		blockCount := int64(binary.BigEndian.Uint16(hdr[offBlockCount:]))
 		udoff += (1 + blockCount) * blockSize
 	}
@@ -89,7 +98,7 @@ func walkVR9(img *cd.Image) ([]fileEntry, []Deviation, error) {
 // at/past the disc's data end). The VR5-only magic and the index-0 block-0
 // checks do not apply to a forward chain walk that starts at the first file
 // header.
-func validFileHeader(img *cd.Image, hdr []byte, udoff, end int64) bool {
+func validFileHeader(img cdSource, hdr []byte, udoff, end int64) bool {
 	if string(hdr[:32]) != sigVR9 { // check 1
 		return false
 	}
@@ -275,7 +284,7 @@ func groupSongs(files []fileEntry) []songGroup {
 // devs immediately and those found during replay as each song is consumed. The
 // iterator processes one song at a time so a large Source is never fully
 // materialized (bounded memory, per the foundation).
-func extractVR9(img *cd.Image, dec Decoder, devs *[]Deviation) (iter.Seq2[TrackResult, error], error) {
+func extractVR9(img cdSource, dec Decoder, devs *[]Deviation) (iter.Seq2[TrackResult, error], error) {
 	files, wdevs, err := walkVR9(img)
 	if err != nil {
 		return nil, err
@@ -299,7 +308,7 @@ func extractVR9(img *cd.Image, dec Decoder, devs *[]Deviation) (iter.Seq2[TrackR
 // extractSong replays one song's event log against its takes into per-v-track
 // results. Takes are resolved by FileID (§5.7: VR9 CD FileIDs equal the HDD FAT
 // start clusters the event records carry) and decoded on demand.
-func extractSong(img *cd.Image, dec Decoder, g songGroup) ([]TrackResult, []Deviation) {
+func extractSong(img cdSource, dec Decoder, g songGroup) ([]TrackResult, []Deviation) {
 	loc := fmt.Sprintf("song %d", g.number)
 	elst, ok := findEventList(g.files)
 	if !ok {
@@ -350,7 +359,7 @@ func findEventList(files []fileEntry) (fileEntry, bool) {
 // way the referenced ID equals the take's header FileID). refs is the list of
 // FileIDs the timeline references (0 = erase, skipped). Referenced takes with no
 // file on disc are left absent (the timeline builder reports them, §10).
-func decodeTakes(img *cd.Image, dec Decoder, files []fileEntry, refs []uint16, format Format, loc string) (map[uint16]PCM, []Deviation) {
+func decodeTakes(img cdSource, dec Decoder, files []fileEntry, refs []uint16, format Format, loc string) (map[uint16]PCM, []Deviation) {
 	byID := map[uint16]fileEntry{}
 	for _, f := range files {
 		if strings.HasPrefix(f.filename, "TAKE") {
@@ -370,10 +379,9 @@ func decodeTakes(img *cd.Image, dec Decoder, files []fileEntry, refs []uint16, f
 		if !ok {
 			continue // reported by the timeline builder as a missing take
 		}
-		raw, err := img.ReadUserData(f.dataOff, int(f.size))
-		if err != nil {
-			devs = append(devs, Deviation{Location: loc, SpecRef: "§5.4", Severity: SeverityError,
-				Message: fmt.Sprintf("reading take %#04x: %v", id, err)})
+		raw, rdevs := readFileData(img, f.dataOff, f.size, loc, id)
+		devs = append(devs, rdevs...)
+		if raw == nil {
 			continue
 		}
 		pcm, err := dec.Decode(format, raw, blockSize)

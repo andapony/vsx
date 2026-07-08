@@ -53,6 +53,16 @@ type Deviation struct {
 	Message  string   // human-readable description
 }
 
+// cookedRipDeviation is the §5/§10 data-integrity warning for a cooked (dd)
+// rip: such dumps are frequently truncated or block-shifted, so best-effort
+// attempts them with this warning while the strict gate (command layer) turns
+// any deviation into a hard abort. Both the single-disc and backup-set paths
+// raise it identically.
+func cookedRipDeviation() Deviation {
+	return Deviation{Location: "disc", SpecRef: "§5", Severity: SeverityWarning,
+		Message: "cooked (dd) rip; raw 2352-byte-frame dumps are recommended for data integrity"}
+}
+
 // SongRef identifies a song within a Source.
 type SongRef struct {
 	Number int    // the song's catalog number (always present in output names)
@@ -122,14 +132,19 @@ func (r Result) Deviations() []Deviation {
 // identified but reported as not yet supported. The Source file stays open for
 // the lifetime of the track iterator and is closed when iteration ends.
 func Extract(sourcePath string, opts Options) (Result, error) {
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		return Result{}, fmt.Errorf("core: stat source: %w", err)
+	}
+	// A directory is a multi-disc CD backup set (§5.6): its dumps are grouped
+	// into one Source. A single file is one HDD image or one CD disc.
+	if info.IsDir() {
+		return extractSet(sourcePath, opts)
+	}
+
 	f, err := os.Open(sourcePath)
 	if err != nil {
 		return Result{}, fmt.Errorf("core: opening source: %w", err)
-	}
-	info, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return Result{}, fmt.Errorf("core: stat source: %w", err)
 	}
 	devs := &[]Deviation{}
 
@@ -176,11 +191,7 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 	}
 
 	if img.Cooked() {
-		// §5/§10 data-integrity rule: dd rips are frequently truncated or
-		// block-shifted. Best-effort attempts it with this warning; the strict
-		// gate (command layer) turns any deviation into a hard abort.
-		*devs = append(*devs, Deviation{Location: "disc", SpecRef: "§5",
-			Severity: SeverityWarning, Message: "cooked (dd) rip; raw 2352-byte-frame dumps are recommended for data integrity"})
+		*devs = append(*devs, cookedRipDeviation())
 	}
 
 	var inner iter.Seq2[TrackResult, error]
@@ -201,6 +212,44 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 	return Result{tracks: streamClosing(f, inner), deviations: devs}, nil
 }
 
+// extractSet groups a directory of CD dumps into one multi-disc backup set
+// (§5.6) and streams its audio. Grouping deviations (foreign files, missing
+// discs) are present immediately; the machine-specific walk then runs over the
+// stitched reader exactly as it does for a single disc. The set's disc files
+// stay open for the lifetime of the track iterator and are all closed when it
+// ends. A directory can only be a CD set, so --as=hdd is a usage error here.
+func extractSet(dir string, opts Options) (Result, error) {
+	if strings.EqualFold(strings.TrimSpace(opts.As), "hdd") {
+		return Result{}, fmt.Errorf("core: --as=hdd but %q is a directory (an HDD source is a single image, not a directory)", dir)
+	}
+
+	set, err := openBackupSet(dir, opts)
+	if err != nil {
+		return Result{}, err
+	}
+	devs := &[]Deviation{}
+	*devs = append(*devs, set.devs...)
+	if set.cooked {
+		*devs = append(*devs, cookedRipDeviation())
+	}
+
+	var inner iter.Seq2[TrackResult, error]
+	switch set.machine {
+	case machineVR9:
+		inner, err = extractVR9(set.reader, NewDecoder(), devs)
+	case machineVR5:
+		inner, err = extractVR5(set.reader, NewDecoder(), devs)
+	default:
+		closeAll(set.files)
+		return Result{}, fmt.Errorf("core: backup set machine not supported by this build; machine=%v", set.machine)
+	}
+	if err != nil {
+		closeAll(set.files)
+		return Result{}, err
+	}
+	return Result{tracks: streamClosingAll(set.files, inner), deviations: devs}, nil
+}
+
 // newHDDResult builds a streaming Result over a Roland live disk, keeping the
 // Source file open for the lifetime of the track iterator and closing it when
 // iteration ends — the same ownership contract as the CD path.
@@ -217,12 +266,26 @@ func newHDDResult(f *os.File, vol *hdd.Volume, devs *[]Deviation) (Result, error
 // iteration ends (whether drained or abandoned early) — the file must stay open
 // for the whole lazy walk, since PCM is read on demand.
 func streamClosing(f *os.File, inner iter.Seq2[TrackResult, error]) iter.Seq2[TrackResult, error] {
+	return streamClosingAll([]*os.File{f}, inner)
+}
+
+// streamClosingAll is streamClosing for a multi-disc set: it closes every disc
+// file once iteration ends. All disc files must stay open for the whole lazy
+// walk, since a spanned take reads across discs on demand.
+func streamClosingAll(files []*os.File, inner iter.Seq2[TrackResult, error]) iter.Seq2[TrackResult, error] {
 	return func(yield func(TrackResult, error) bool) {
-		defer f.Close()
+		defer closeAll(files)
 		for tr, e := range inner {
 			if !yield(tr, e) {
 				return
 			}
 		}
+	}
+}
+
+// closeAll closes every file handle, ignoring errors (best effort on teardown).
+func closeAll(files []*os.File) {
+	for _, f := range files {
+		f.Close()
 	}
 }
