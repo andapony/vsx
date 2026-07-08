@@ -112,6 +112,33 @@ func TestExtractsVR9DiscToWavFiles(t *testing.T) {
 	assert.Equal(t, "WAVE", string(b[8:12]))
 }
 
+// TestExtractsMultiDiscSet verifies the CLI end-to-end on a directory of disc
+// dumps (issue #6): the discs are grouped into one Source, a take spanning the
+// disc boundary is reconstructed, and its v-track is written as a WAV under the
+// numbered song folder with a clean exit.
+func TestExtractsMultiDiscSet(t *testing.T) {
+	songs := []vsfix.Song{{
+		Number: 1, Name: "SPANSONG",
+		Takes: []vsfix.Take{{FileID: 0x0100, Name: "TAKE0100", MT2: make([]byte, 0xC000)}},
+		Events: []vsfix.Event{
+			{Start: 12, End: 12 + 4095, FileID: 0x0100, Track: 1, VTrack: 1},
+		},
+	}}
+	discs := vsfix.VR9Set{SetID: [4]byte{7, 7, 7, 7}, Songs: songs, SpanFileID: 0x0100, SpanAvailBlocks: 1}.BuildDiscsRaw()
+
+	dir := t.TempDir()
+	// Filenames sorted opposite to disc-index order: extraction must order by
+	// disc index, not by filename.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "z_disc0.bin"), discs[0], 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a_disc1.bin"), discs[1], 0o644))
+
+	out := t.TempDir()
+	code, stdout, stderr := runCLI("-o", out, dir)
+	assert.Equal(t, exitOK, code, "a complete multi-disc set extracts cleanly; stderr: %s", stderr)
+	assert.FileExists(t, filepath.Join(out, "01 - SPANSONG", "T1-V1.wav"))
+	assert.Contains(t, stdout, "T1-V1.wav")
+}
+
 // TestAsOverrideForcesVR9 verifies the --as override drives extraction of a dump
 // whose signature is unrecognized but whose structure is otherwise VR9.
 func TestAsOverrideForcesVR9(t *testing.T) {

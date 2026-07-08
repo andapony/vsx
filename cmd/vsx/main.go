@@ -209,7 +209,8 @@ func sanitize(name string) string {
 func usage(w io.Writer, fs *flag.FlagSet) {
 	fmt.Fprint(w, "vsx — extract audio from Roland VS-series media to WAV\n\n")
 	fmt.Fprint(w, "usage: vsx [flags] <source>\n\n")
-	fmt.Fprint(w, "  <source>  path to an HDD image or a CD backup-set dump\n\n")
+	fmt.Fprint(w, "  <source>  path to an HDD image, a single CD backup-set dump, or a\n")
+	fmt.Fprint(w, "            directory of one set's disc dumps (multi-disc, §5.6)\n\n")
 	fmt.Fprint(w, "flags:\n")
 	fs.PrintDefaults()
 }
