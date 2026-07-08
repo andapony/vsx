@@ -171,6 +171,7 @@ const vr9OriginFrames = 12
 type vr9Event struct {
 	start, end, trimmed uint32
 	fileID              uint16
+	clusterCount        uint16 // event 0x18: for the §8.3 HDD integrity check
 	code                int
 }
 
@@ -179,7 +180,7 @@ type vr9Event struct {
 // replayed by the shared timeline kernel with the VR9 origin. A v-track with no
 // take-bearing record yields no TrackResult. The VR9 log carries no per-track
 // name, so results carry the default (empty) Name.
-func buildVR9Tracks(events []vr9Event, takes map[uint16]PCM, song SongRef, sampleRate int, format Format) ([]TrackResult, []Deviation) {
+func buildVR9Tracks(events []vr9Event, takes map[uint16]PCM, song SongRef, aud audioSpec) ([]TrackResult, []Deviation) {
 	// Group events by v-track code, preserving log order, and remember the
 	// code ordering so output is deterministic.
 	byCode := map[int][]vr9Event{}
@@ -196,11 +197,11 @@ func buildVR9Tracks(events []vr9Event, takes map[uint16]PCM, song SongRef, sampl
 	for _, code := range codeOrder {
 		evs := make([]timelineEvent, len(byCode[code]))
 		for i, e := range byCode[code] {
-			evs[i] = timelineEvent{start: e.start, end: e.end, trimmed: e.trimmed, fileID: e.fileID}
+			evs[i] = timelineEvent{start: e.start, end: e.end, trimmed: e.trimmed, fileID: e.fileID, clusterCount: e.clusterCount}
 		}
 		track := code/8 + 1
 		vtrack := code%8 + 1
-		tr, ok, d := buildVTrack(evs, takes, vr9OriginFrames, song, track, vtrack, sampleRate, "", format)
+		tr, ok, d := buildVTrack(evs, takes, vr9OriginFrames, song, track, vtrack, "", aud)
 		devs = append(devs, d...)
 		if ok {
 			out = append(out, tr)
@@ -233,11 +234,12 @@ func parseVR9Log(data []byte) ([]vr9Event, []Deviation) {
 		}
 		r := data[off : off+vr9RecordSize]
 		events = append(events, vr9Event{
-			start:   binary.BigEndian.Uint32(r[0x00:]),
-			end:     binary.BigEndian.Uint32(r[0x04:]),
-			trimmed: binary.BigEndian.Uint32(r[0x08:]),
-			fileID:  binary.BigEndian.Uint16(r[0x14:]),
-			code:    int(r[0x20]),
+			start:        binary.BigEndian.Uint32(r[0x00:]),
+			end:          binary.BigEndian.Uint32(r[0x04:]),
+			trimmed:      binary.BigEndian.Uint32(r[0x08:]),
+			fileID:       binary.BigEndian.Uint16(r[0x14:]),
+			clusterCount: binary.BigEndian.Uint16(r[0x18:]),
+			code:         int(r[0x20]),
 		})
 	}
 	return events, devs
@@ -324,7 +326,8 @@ func extractSong(img *cd.Image, dec Decoder, g songGroup) ([]TrackResult, []Devi
 	takes, takeDevs := decodeTakes(img, dec, g.files, refs, format, loc)
 	devs = append(devs, takeDevs...)
 
-	tracks, tlDevs := buildVR9Tracks(events, takes, SongRef{Number: int(g.number), Name: g.name}, sampleRate, format)
+	tracks, tlDevs := buildVR9Tracks(events, takes, SongRef{Number: int(g.number), Name: g.name},
+		audioSpec{sampleRate: sampleRate, format: format, clusterSize: blockSize})
 	devs = append(devs, tlDevs...)
 	return tracks, devs
 }

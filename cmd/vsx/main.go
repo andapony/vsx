@@ -40,7 +40,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("vsx", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	strict := fs.Bool("strict", false, "conformance gate: abort on the first deviation with no output")
-	as := fs.String("as", "", "force the source profile when detection is ambiguous (vr9|vr5)")
+	as := fs.String("as", "", "force the source type when detection is ambiguous (hdd|cd|vr9|vr5)")
 	outDir := fs.String("o", ".", "output directory to write song folders into")
 	verbose := fs.Bool("v", false, "verbose: log each extracted v-track to stderr")
 	quiet := fs.Bool("q", false, "quiet: suppress deviations and the summary")

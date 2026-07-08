@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/andapony/vsx/internal/cd"
+	"github.com/andapony/vsx/internal/hdd"
 	"github.com/andapony/vsx/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -120,15 +121,83 @@ func TestVR5MediaStructuralInvariants(t *testing.T) {
 	}
 }
 
+// findHDDImages returns the media-directory files that open as Roland VS live
+// disks — how the HDD media test locates real corpus images without hard-coding
+// filenames. hdd.Open succeeding (a partition BPB carries the "Roland  " OEM ID,
+// §4.1) is the discriminator.
+func findHDDImages(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	for _, pat := range []string{"*.img", "*.bin", "*.iso"} {
+		matches, _ := filepath.Glob(filepath.Join(dir, pat))
+		for _, m := range matches {
+			f, err := os.Open(m)
+			if err != nil {
+				continue
+			}
+			info, err := f.Stat()
+			if err != nil {
+				f.Close()
+				continue
+			}
+			_, herr := hdd.Open(f, info.Size())
+			f.Close()
+			if herr == nil {
+				out = append(out, m)
+			}
+		}
+	}
+	return out
+}
+
+// TestHDDMediaStructuralInvariants runs the extractor against real Roland VS
+// live-disk images (when VSX_TEST_MEDIA is set) and asserts the §4 structural
+// invariants on genuine media: the 12-partition MBR (including the extended
+// offsets §4.1 warns a 4-entry parser misses) and byte-swapped FAT16 walk yield
+// songs; every emitted v-track sits in its machine's track/v-track grid, decodes
+// to a real bit depth (implying the §4.2 byte-pair unswap is correct — a wrong
+// swap would corrupt the codec stream), carries a native rate, and resolves a
+// take by filename (§4.3). A disk hosting both machines' song directories
+// extracts each by extension.
+func TestHDDMediaStructuralInvariants(t *testing.T) {
+	dir := testutil.RequireMedia(t)
+	images := findHDDImages(t, dir)
+	if len(images) == 0 {
+		t.Skipf("no Roland VS HDD images found under %s", dir)
+	}
+	for _, path := range images {
+		r, err := Extract(path, Options{})
+		require.NoError(t, err)
+		n := 0
+		for tr, err := range r.Tracks() {
+			require.NoError(t, err)
+			n++
+			assert.GreaterOrEqual(t, tr.Track, 1)
+			assert.LessOrEqual(t, tr.Track, 18, "no machine exceeds 18 physical tracks")
+			assert.GreaterOrEqual(t, tr.VTrack, 1)
+			assert.LessOrEqual(t, tr.VTrack, 16, "no machine exceeds 16 v-tracks per track")
+			assert.Contains(t, []int{16, 24}, tr.PCM.BitDepth)
+			assert.Positive(t, tr.Take.SampleRate)
+			assert.Positive(t, tr.Take.ClusterSize, "the BPB cluster size reached the decode metadata (§4.2)")
+			// A populated v-track resolved a take by filename (§4.3): its first
+			// FAT cluster (the event's 0x14) is a real, positive cluster number.
+			assert.Positive(t, tr.Take.FirstCluster, "populated HDD take resolves to a FAT cluster")
+		}
+		assert.Positive(t, n, "a Roland HDD image extracts at least one v-track")
+		t.Logf("%s: %d v-tracks extracted", filepath.Base(path), n)
+	}
+}
+
 // TestVR9HDDtoCDCrossCheck is the ready, skipped cross-check slot the issue
 // calls for: when both an HDD image and a CD backup of the same song exist, the
-// two must extract to byte-identical PCM (§5.7). It stays skipped until HDD
-// extraction (a later slice) and matching media are both available.
+// two must extract to byte-identical PCM (§5.7). HDD extraction now exists (this
+// slice); it stays skipped only until matching HDD+CD media of one song are in
+// the corpus so the pairing can be named.
 func TestVR9HDDtoCDCrossCheck(t *testing.T) {
 	dir := testutil.RequireMedia(t)
-	hdd := filepath.Join(dir, "vs-880ex.img")
-	if _, err := os.Stat(hdd); err != nil {
+	hddImg := filepath.Join(dir, "vs-880ex.img")
+	if _, err := os.Stat(hddImg); err != nil {
 		t.Skip("HDD↔CD cross-check pending: no HDD image and matching CD backup in the corpus")
 	}
-	t.Skip("HDD↔CD cross-check pending HDD extraction support (later slice)")
+	t.Skip("HDD↔CD cross-check pending a named HDD+CD song pairing in the corpus")
 }
