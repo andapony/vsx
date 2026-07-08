@@ -24,6 +24,15 @@ const (
 type PCM struct {
 	Samples  []int32
 	BitDepth int
+
+	// UnknownBlockOffsets holds the 0-based block index of each RDAC block in
+	// this take that selected an unimplemented ("never occurs") codec pattern
+	// and was rendered silent (Appendix A / §12); block i covers samples
+	// [i*16, i*16+16). The timeline uses these to warn only when such silence is
+	// actually copied into output audio — a take's unused tail routinely decodes
+	// to these patterns (padding / §9 remnants) and must not be reported. Empty
+	// for the uncompressed formats and MTP.
+	UnknownBlockOffsets []int
 }
 
 // Decoder turns a take's raw codec bytes into mono PCM. It is the narrow seam
@@ -50,17 +59,17 @@ func (rdacDecoder) Decode(format Format, data []byte, clusterSize int) (PCM, err
 		}
 		return PCM{Samples: s, BitDepth: 24}, nil
 	case FormatMT1:
-		s, err := rdac.DecodeMT1(data, 0)
+		s, stats, err := rdac.DecodeMT1CorrectStats(data)
 		if err != nil {
 			return PCM{}, err
 		}
-		return PCM{Samples: widen16(s), BitDepth: 16}, nil
+		return PCM{Samples: widen16(s), BitDepth: 16, UnknownBlockOffsets: stats.UnknownBlockOffsets}, nil
 	case FormatMT2:
-		s, err := rdac.DecodeMT2Cluster(data, clusterSize)
+		s, stats, err := rdac.DecodeMT2ClusterStats(data, clusterSize)
 		if err != nil {
 			return PCM{}, err
 		}
-		return PCM{Samples: widen16(s), BitDepth: 16}, nil
+		return PCM{Samples: widen16(s), BitDepth: 16, UnknownBlockOffsets: stats.UnknownBlockOffsets}, nil
 	case FormatM16:
 		return decodeM16(data)
 	case FormatM24:
