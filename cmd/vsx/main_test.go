@@ -179,6 +179,44 @@ func TestDeviationFlipsExitCodeButStillWrites(t *testing.T) {
 	assert.NotContains(t, stderrQ, "deviation")
 }
 
+// TestDeviationsStreamInContext verifies issue #28: in best-effort mode a
+// deviation is reported on stderr as extraction reaches it, not batched at the
+// end of the run. A deviation confined to the first song must appear before the
+// second song's per-track output, so someone watching a long run sees each
+// problem next to the audio it concerns rather than in a dump after everything.
+//
+// The ordering is observable because -v logs each extracted v-track to stderr:
+// with streaming, song 1's deviation precedes song 2's "extracted …/02 - …"
+// line; with the deviations batched at the end it would follow every song.
+func TestDeviationsStreamInContext(t *testing.T) {
+	d := vsfix.Disc{
+		SetID: [4]byte{1, 2, 3, 4},
+		Songs: []vsfix.Song{
+			// Song 1 has a clean v-track plus a dangling take reference (§10
+			// deviation) — it still yields audio, and the deviation is about it.
+			{Number: 1, Name: "AONE", Takes: []vsfix.Take{{FileID: 0x0100, Name: "TAKE0100", MT2: make([]byte, 12*4)}},
+				Events: []vsfix.Event{
+					{Start: 12, End: 16, FileID: 0x0100, Track: 1, VTrack: 1},
+					{Start: 12, End: 16, FileID: 0xBEEF, Track: 5, VTrack: 1},
+				}},
+			// Song 2 is clean.
+			{Number: 2, Name: "BTWO", Takes: []vsfix.Take{{FileID: 0x0200, Name: "TAKE0200", MT2: make([]byte, 12*4)}},
+				Events: []vsfix.Event{{Start: 12, End: 16, FileID: 0x0200, Track: 1, VTrack: 1}}},
+		},
+	}
+	src := writeDisc(t, d)
+
+	code, _, stderr := runCLI("-v", "-o", t.TempDir(), src)
+	require.Equal(t, exitDeviations, code, "stderr: %s", stderr)
+
+	devAt := strings.Index(stderr, "deviation")
+	song2At := strings.Index(stderr, "02 - BTWO")
+	require.NotEqual(t, -1, devAt, "the deviation is reported on stderr")
+	require.NotEqual(t, -1, song2At, "song 2's v-track is logged on stderr under -v")
+	assert.Less(t, devAt, song2At,
+		"song 1's deviation must stream before song 2's output, not batch at the end")
+}
+
 // stereoPairDisc is a one-song VR9 archive whose tracks 1 and 2 each carry a
 // single populated v-track with identical event geometry — a genuine §8.4
 // stereo pair — used to exercise the --stereo CLI path.
