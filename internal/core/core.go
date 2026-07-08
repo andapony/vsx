@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"iter"
 	"os"
+
+	"github.com/andapony/vsx/internal/cd"
 )
 
 // Options controls a single extraction run.
@@ -19,9 +21,10 @@ type Options struct {
 	// deviation with no output, instead of the default best-effort posture
 	// (ADR-0002 / CONTEXT.md).
 	Strict bool
-	// SourceType forces the Source kind ("hdd" or "cd") when byte-level
-	// detection is ambiguous on damaged media; "" means autodetect.
-	SourceType string
+	// As forces the Source profile ("vr9"/"vr5") when byte-level detection
+	// finds no known archive signature; "" means autodetect (§5.2). It is the
+	// --as override.
+	As string
 }
 
 // Severity ranks how far a Deviation departs from the spec.
@@ -73,16 +76,20 @@ type TrackResult struct {
 // Result is the streaming outcome of an extraction. Tracks yields per-(song,
 // v-track) results lazily so a large Source is never held in memory all at
 // once; Deviations reports the departures gathered during the walk.
+//
+// Deviations accumulate as the walk progresses: enumeration deviations are
+// present immediately, but those found while replaying a song are gathered only
+// as that song's tracks are consumed. Range over Tracks to completion before
+// reading Deviations to see the full set.
 type Result struct {
 	tracks     iter.Seq2[TrackResult, error]
-	deviations []Deviation
+	deviations *[]Deviation
 }
 
-// newResult builds a Result from a lazy track sequence and the deviations
-// gathered so far. It is the internal constructor the Source walk will use;
-// callers observe a Result only through Tracks and Deviations.
+// newResult builds a Result from a lazy track sequence and a fixed set of
+// deviations. Callers observe a Result only through Tracks and Deviations.
 func newResult(tracks iter.Seq2[TrackResult, error], deviations []Deviation) Result {
-	return Result{tracks: tracks, deviations: deviations}
+	return Result{tracks: tracks, deviations: &deviations}
 }
 
 // Tracks returns a lazy iterator over the extracted per-v-track results. It is
@@ -95,20 +102,62 @@ func (r Result) Tracks() iter.Seq2[TrackResult, error] {
 }
 
 // Deviations returns the departures from the spec observed for this Source.
-func (r Result) Deviations() []Deviation { return r.deviations }
+func (r Result) Deviations() []Deviation {
+	if r.deviations == nil {
+		return nil
+	}
+	return *r.deviations
+}
 
-// Extract opens the Source at sourcePath and returns a streaming Result.
-//
-// This is the pipeline façade; the format/structure walk that populates the
-// stream lands in later slices. For now it validates that the Source is
-// openable and returns an empty (but safe-to-range) Result.
+// Extract opens the Source at sourcePath, identifies it, and returns a streaming
+// Result. For this slice the only extractor is the single-disc VS-880EX (VR9) CD
+// path (issue #3); other machines and HDD sources are identified but reported as
+// not yet supported. The Source file stays open for the lifetime of the track
+// iterator and is closed when iteration ends.
 func Extract(sourcePath string, opts Options) (Result, error) {
 	f, err := os.Open(sourcePath)
 	if err != nil {
 		return Result{}, fmt.Errorf("core: opening source: %w", err)
 	}
-	f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return Result{}, fmt.Errorf("core: stat source: %w", err)
+	}
+	img, err := cd.New(f, info.Size())
+	if err != nil {
+		f.Close()
+		return Result{}, fmt.Errorf("core: %w", err)
+	}
 
-	empty := func(func(TrackResult, error) bool) {}
-	return newResult(empty, nil), nil
+	p, err := detect(img, opts.As)
+	if err != nil {
+		f.Close()
+		return Result{}, err
+	}
+	if p.kind != kindCD || p.machine != machineVR9 {
+		f.Close()
+		return Result{}, fmt.Errorf("core: source identified but not yet supported by this build (only single-disc VS-880EX CD); machine=%v", p.machine)
+	}
+
+	devs := &[]Deviation{}
+	if img.Cooked() {
+		*devs = append(*devs, Deviation{Location: "disc", SpecRef: "§5",
+			Severity: SeverityWarning, Message: "cooked (dd) rip; raw 2352-byte-frame dumps are recommended for data integrity"})
+	}
+	inner, err := extractVR9(img, NewDecoder(), devs)
+	if err != nil {
+		f.Close()
+		return Result{}, err
+	}
+
+	tracks := func(yield func(TrackResult, error) bool) {
+		defer f.Close()
+		for tr, e := range inner {
+			if !yield(tr, e) {
+				return
+			}
+		}
+	}
+	return Result{tracks: tracks, deviations: devs}, nil
 }
