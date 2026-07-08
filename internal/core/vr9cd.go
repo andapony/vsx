@@ -162,9 +162,6 @@ func trimName(b []byte) string {
 // carry StartFrame = 12, so 12 frames are subtracted to place samples at zero.
 const vr9OriginFrames = 12
 
-// samplesPerFrame is the RDAC framing constant: one frame is 16 samples (§3).
-const samplesPerFrame = 16
-
 // vr9Event is one parsed VS-880EX event-log record (§7): a take placement on the
 // timeline. Frames are the raw stored values (pre-origin). code is the 0-based
 // v-track code at record offset 0x20. A record is an erase (writes silence) iff
@@ -178,13 +175,11 @@ type vr9Event struct {
 }
 
 // buildVR9Tracks replays a VS-880EX event log into one PCM buffer per populated
-// v-track (§8.2): records are applied in stored order, each writing its
-// [Start,End) range over whatever is there (later wins); gaps stay silent; an
-// erase (fileID 0 / tombstone) writes silence; VR9 origin = 12 is applied. A
-// v-track with no take-bearing record yields no TrackResult.
+// v-track (§8.2): records group by v-track code in log order, then each group is
+// replayed by the shared timeline kernel with the VR9 origin. A v-track with no
+// take-bearing record yields no TrackResult. The VR9 log carries no per-track
+// name, so results carry the default (empty) Name.
 func buildVR9Tracks(events []vr9Event, takes map[uint16]PCM, song SongRef, sampleRate int, format Format) ([]TrackResult, []Deviation) {
-	var devs []Deviation
-
 	// Group events by v-track code, preserving log order, and remember the
 	// code ordering so output is deterministic.
 	byCode := map[int][]vr9Event{}
@@ -196,127 +191,22 @@ func buildVR9Tracks(events []vr9Event, takes map[uint16]PCM, song SongRef, sampl
 		byCode[e.code] = append(byCode[e.code], e)
 	}
 
-	bitDepth := bitDepthForFormat(format)
 	var out []TrackResult
+	var devs []Deviation
 	for _, code := range codeOrder {
-		evs := byCode[code]
+		evs := make([]timelineEvent, len(byCode[code]))
+		for i, e := range byCode[code] {
+			evs[i] = timelineEvent{start: e.start, end: e.end, trimmed: e.trimmed, fileID: e.fileID}
+		}
 		track := code/8 + 1
 		vtrack := code%8 + 1
-		loc := fmt.Sprintf("song %d / track %d / v-track %d", song.Number, track, vtrack)
-
-		hasAudio := false
-		length := 0
-		for _, e := range evs {
-			if e.fileID != 0 {
-				hasAudio = true
-			}
-			if end := (int(e.end) - vr9OriginFrames) * samplesPerFrame; end > length {
-				length = end
-			}
+		tr, ok, d := buildVTrack(evs, takes, vr9OriginFrames, song, track, vtrack, sampleRate, "", format)
+		devs = append(devs, d...)
+		if ok {
+			out = append(out, tr)
 		}
-		if !hasAudio {
-			continue // empty v-track: no file
-		}
-
-		buf := make([]int32, length)
-		var firstCluster uint16
-		for _, e := range evs {
-			if e.end <= e.start {
-				devs = append(devs, Deviation{Location: loc, SpecRef: "§8", Severity: SeverityWarning,
-					Message: fmt.Sprintf("degenerate event (EndFrame %d ≤ StartFrame %d); skipped", e.end, e.start)})
-				continue
-			}
-			at := (int(e.start) - vr9OriginFrames) * samplesPerFrame
-			span := (int(e.end) - int(e.start)) * samplesPerFrame
-			// later-wins: clear the range first so a short/erase write does not
-			// leave a previous take's tail showing through.
-			clearRange(buf, at, span)
-			if e.fileID == 0 {
-				continue // erase (§8.2): the cleared range is the result
-			}
-			if firstCluster == 0 {
-				firstCluster = e.fileID
-			}
-			take, ok := takes[e.fileID]
-			if !ok {
-				devs = append(devs, Deviation{Location: loc, SpecRef: "§10", Severity: SeverityError,
-					Message: fmt.Sprintf("event references take %#04x with no take file; span filled with silence", e.fileID)})
-				continue
-			}
-			trim := int(e.trimmed) * samplesPerFrame
-			copied := overlay(buf, at, span, take.Samples, trim)
-			if copied < span {
-				devs = append(devs, Deviation{Location: loc, SpecRef: "§10", Severity: SeverityWarning,
-					Message: fmt.Sprintf("take %#04x shorter than event span; %d samples padded with silence", e.fileID, span-copied)})
-			}
-		}
-
-		out = append(out, TrackResult{
-			Song:   song,
-			Track:  track,
-			VTrack: vtrack,
-			PCM:    PCM{Samples: buf, BitDepth: bitDepth},
-			Take: Take{
-				FirstCluster: int(firstCluster),
-				ClusterSize:  blockSize,
-				Format:       format,
-				SampleRate:   sampleRate,
-			},
-		})
 	}
 	return out, devs
-}
-
-// clearRange zeroes buf over [at, at+span), clamped to the buffer, so a
-// later-winning record's silence overwrites earlier audio.
-func clearRange(buf []int32, at, span int) {
-	lo, hi := clamp(len(buf), at, span)
-	for i := lo; i < hi; i++ {
-		buf[i] = 0
-	}
-}
-
-// overlay copies up to span samples from src[srcOff:] into buf at position at,
-// clamped to both buffer and source. It returns the number of destination
-// samples that received real audio (fewer than span means the source ran out —
-// a truncated take, §10).
-func overlay(buf []int32, at, span int, src []int32, srcOff int) int {
-	lo, hi := clamp(len(buf), at, span)
-	copied := 0
-	for i := lo; i < hi; i++ {
-		si := srcOff + (i - at)
-		if si < 0 || si >= len(src) {
-			continue
-		}
-		buf[i] = src[si]
-		copied++
-	}
-	return copied
-}
-
-// clamp returns the [lo,hi) intersection of [at,at+span) with [0,length).
-func clamp(length, at, span int) (int, int) {
-	lo, hi := at, at+span
-	if lo < 0 {
-		lo = 0
-	}
-	if hi > length {
-		hi = length
-	}
-	if lo > hi {
-		lo = hi
-	}
-	return lo, hi
-}
-
-// bitDepthForFormat returns the PCM bit depth a decoded format yields (§2).
-func bitDepthForFormat(f Format) int {
-	switch f {
-	case FormatMTP, FormatM24:
-		return 24
-	default:
-		return 16
-	}
 }
 
 // vr9RecordSize is the fixed VS-880EX event-record length (§1/§7).
@@ -427,7 +317,11 @@ func extractSong(img *cd.Image, dec Decoder, g songGroup) ([]TrackResult, []Devi
 	}
 	format := Format(elst.formatCode)
 
-	takes, takeDevs := decodeTakes(img, dec, g.files, events, format, loc)
+	refs := make([]uint16, 0, len(events))
+	for _, e := range events {
+		refs = append(refs, e.fileID)
+	}
+	takes, takeDevs := decodeTakes(img, dec, g.files, refs, format, loc)
 	devs = append(devs, takeDevs...)
 
 	tracks, tlDevs := buildVR9Tracks(events, takes, SongRef{Number: int(g.number), Name: g.name}, sampleRate, format)
@@ -445,11 +339,15 @@ func findEventList(files []fileEntry) (fileEntry, bool) {
 	return fileEntry{}, false
 }
 
-// decodeTakes decodes every take referenced by the song's events into a
-// FileID→PCM map, reading each take file's bytes from the image and decoding
-// through the seam. Referenced takes with no file on disc are left absent (the
-// timeline builder reports them, §10).
-func decodeTakes(img *cd.Image, dec Decoder, files []fileEntry, events []vr9Event, format Format, loc string) (map[uint16]PCM, []Deviation) {
+// decodeTakes decodes every referenced take into a FileID→PCM map, reading each
+// take file's bytes from the image and decoding through the seam. Takes are
+// resolved by FileID — the number in the take's archive filename (`TAKE%04X`) —
+// which the event record's 0x14 field carries on both machines (§5.7: VR9 keeps
+// HDD start clusters, VR5 renames into a dense archive cluster space, but either
+// way the referenced ID equals the take's header FileID). refs is the list of
+// FileIDs the timeline references (0 = erase, skipped). Referenced takes with no
+// file on disc are left absent (the timeline builder reports them, §10).
+func decodeTakes(img *cd.Image, dec Decoder, files []fileEntry, refs []uint16, format Format, loc string) (map[uint16]PCM, []Deviation) {
 	byID := map[uint16]fileEntry{}
 	for _, f := range files {
 		if strings.HasPrefix(f.filename, "TAKE") {
@@ -458,30 +356,30 @@ func decodeTakes(img *cd.Image, dec Decoder, files []fileEntry, events []vr9Even
 	}
 	var devs []Deviation
 	takes := map[uint16]PCM{}
-	for _, e := range events {
-		if e.fileID == 0 {
+	for _, id := range refs {
+		if id == 0 {
 			continue // erase record references no take
 		}
-		if _, done := takes[e.fileID]; done {
+		if _, done := takes[id]; done {
 			continue
 		}
-		f, ok := byID[e.fileID]
+		f, ok := byID[id]
 		if !ok {
 			continue // reported by the timeline builder as a missing take
 		}
 		raw, err := img.ReadUserData(f.dataOff, int(f.size))
 		if err != nil {
 			devs = append(devs, Deviation{Location: loc, SpecRef: "§5.4", Severity: SeverityError,
-				Message: fmt.Sprintf("reading take %#04x: %v", e.fileID, err)})
+				Message: fmt.Sprintf("reading take %#04x: %v", id, err)})
 			continue
 		}
 		pcm, err := dec.Decode(format, raw, blockSize)
 		if err != nil {
 			devs = append(devs, Deviation{Location: loc, SpecRef: "§2", Severity: SeverityError,
-				Message: fmt.Sprintf("decoding take %#04x: %v", e.fileID, err)})
+				Message: fmt.Sprintf("decoding take %#04x: %v", id, err)})
 			continue
 		}
-		takes[e.fileID] = pcm
+		takes[id] = pcm
 	}
 	return takes, devs
 }

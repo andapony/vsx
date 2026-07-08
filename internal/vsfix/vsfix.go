@@ -61,13 +61,20 @@ type Song struct {
 
 // Disc describes a single-disc, index-0 VR9 archive to synthesize.
 type Disc struct {
-	SetID [4]byte
-	Songs []Song
+	SetID    [4]byte
+	Songs    []Song
+	NoFiller bool // omit the trailing TDI filler run (a truncated-rip fixture, §10)
 }
 
 // BuildRaw returns a raw 2352-byte-frame CD dump of the described archive.
 func (d Disc) BuildRaw() []byte {
 	return wrapRaw(d.userData())
+}
+
+// BuildCooked returns a "cooked" (2048-byte-sector) dump: the raw user-data
+// stream with no frame wrapper, as a dd/ISO rip would produce (§5).
+func (d Disc) BuildCooked() []byte {
+	return d.userData()
 }
 
 // userData assembles the concatenated user-data stream (§5.1) of the archive.
@@ -100,9 +107,12 @@ func (d Disc) userData() []byte {
 		}
 	}
 
-	// Trailing TDI filler run (§10), block-aligned.
-	for i := 0; i < 2; i++ { // two blocks' worth of filler frames
-		ud = append(ud, fillerBlock()...)
+	// Trailing TDI filler run (§10), block-aligned. Omitted for a
+	// truncated-rip fixture, which the walk must flag as an incomplete dump.
+	if !d.NoFiller {
+		for i := 0; i < 2; i++ { // two blocks' worth of filler frames
+			ud = append(ud, fillerBlock()...)
+		}
 	}
 	return ud
 }
