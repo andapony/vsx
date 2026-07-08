@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"iter"
 	"strings"
-
-	"github.com/andapony/vsx/internal/cd"
 )
 
 // VS-1880 header-block field offsets, from the block start (§5.4). Unlike the
@@ -30,13 +28,22 @@ const (
 // header (check 3): a boundary block's stale per-file area fails it.
 var vr5Magic = []byte{0x60, 0xBF, 0x51, 0x28}
 
+// vr5IdentityFields are the VS-1880 header byte ranges that a continuation
+// disc's repeated header must match for a spanned file (§5.6): the filename, the
+// FileID, and the u32 size.
+var vr5IdentityFields = [][2]int{
+	{vr5OffFilename, vr5OffFilename + 11},
+	{vr5OffFileID, vr5OffFileID + 2},
+	{vr5OffSize, vr5OffSize + 4},
+}
+
 // walkVR5 enumerates a VS-1880 CD archive's files by the §5.4 chain walk,
 // validating every landed-on block with the §5.5 checks and skipping the header
 // copies and song-boundary blocks. VR5 has no song-boundary marker flag, so a
 // boundary block is caught by the magic check (case 3) and the +0x8000 check.
 // The walk ends at the §10 filler run; a dump lacking it is reported as a
 // truncated rip and walked to end-of-data.
-func walkVR5(img *cd.Image) ([]fileEntry, []Deviation, error) {
+func walkVR5(img cdSource) ([]fileEntry, []Deviation, error) {
 	var devs []Deviation
 	end, ok := img.FillerStart()
 	if !ok {
@@ -64,6 +71,8 @@ func walkVR5(img *cd.Image) ([]fileEntry, []Deviation, error) {
 		}
 		fe := parseVR5Header(hdr, udoff)
 		files = append(files, fe)
+		devs = append(devs, verifyJunction(img, hdr, fe.dataOff, fe.size, vr5HeaderSpan,
+			vr5IdentityFields, "file "+strings.TrimRight(fe.filename, " "))...)
 		// VR5 stores no block count; derive it from the file size (§5.4:
 		// next block = current + (1 + ceil(size/0x8000)) × 0x8000).
 		blocks := (fe.size + blockSize - 1) / blockSize
@@ -80,7 +89,7 @@ func walkVR5(img *cd.Image) ([]fileEntry, []Deviation, error) {
 // +0x245C, and the block at +0x8000 is file data (not another archive signature,
 // and before the disc's data end). The index-0 block-0 check does not apply to a
 // forward chain walk that starts at the first file header.
-func validVR5FileHeader(img *cd.Image, hdr []byte, udoff, end int64) bool {
+func validVR5FileHeader(img cdSource, hdr []byte, udoff, end int64) bool {
 	if string(hdr[:32]) != sigVR5 { // check 1
 		return false
 	}
@@ -248,7 +257,7 @@ func userTrackName(name string) string {
 // and replay deviations as each song is consumed. Files are grouped into songs
 // by header song name (§5.4), one song processed at a time so a large Source is
 // never fully materialized.
-func extractVR5(img *cd.Image, dec Decoder, devs *[]Deviation) (iter.Seq2[TrackResult, error], error) {
+func extractVR5(img cdSource, dec Decoder, devs *[]Deviation) (iter.Seq2[TrackResult, error], error) {
 	files, wdevs, err := walkVR5(img)
 	if err != nil {
 		return nil, err
@@ -291,7 +300,7 @@ func groupVR5Songs(files []fileEntry) []songGroup {
 // per-v-track results. The song number is read from the song's SONG file
 // (§4.4); takes are resolved by FileID, which on VR5 CD is the take's archive
 // filename number (§5.7).
-func extractVR5Song(img *cd.Image, dec Decoder, g songGroup, index int) ([]TrackResult, []Deviation) {
+func extractVR5Song(img cdSource, dec Decoder, g songGroup, index int) ([]TrackResult, []Deviation) {
 	number, ndevs := vr5SongNumber(img, g.files, index)
 	devs := ndevs
 	loc := fmt.Sprintf("song %d", number)
@@ -334,7 +343,7 @@ func extractVR5Song(img *cd.Image, dec Decoder, g songGroup, index int) ([]Track
 // (§4.4: source folder number at content offset 0x04). When no SONG file is
 // present, it falls back to the walk position and reports a deviation, so output
 // still carries a distinct, stable number per song.
-func vr5SongNumber(img *cd.Image, files []fileEntry, index int) (int, []Deviation) {
+func vr5SongNumber(img cdSource, files []fileEntry, index int) (int, []Deviation) {
 	for _, f := range files {
 		if !strings.HasPrefix(f.filename, "SONG") {
 			continue

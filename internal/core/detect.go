@@ -50,20 +50,34 @@ func detect(img *cd.Image, override string) (profile, error) {
 	if err != nil {
 		return profile{}, fmt.Errorf("core: reading archive signature: %w", err)
 	}
-	switch string(sig) {
-	case sigVR9:
-		return profile{kind: kindCD, machine: machineVR9}, nil
-	case sigVR5:
-		return profile{kind: kindCD, machine: machineVR5}, nil
+	if m := machineForSig(string(sig), override); m != machineUnknown {
+		return profile{kind: kindCD, machine: m}, nil
 	}
 	switch strings.ToLower(strings.TrimSpace(override)) {
-	case "vr9", "vr9-cd":
-		return profile{kind: kindCD, machine: machineVR9}, nil
-	case "vr5", "vr5-cd":
-		return profile{kind: kindCD, machine: machineVR5}, nil
 	case "":
 		return profile{}, fmt.Errorf("core: unidentifiable source: no known archive signature at user-data offset 0 (pass --as to override)")
 	default:
 		return profile{}, fmt.Errorf("core: unknown --as value %q (want vr9 or vr5)", override)
 	}
+}
+
+// machineForSig maps a 32-byte archive signature to a machine (§5.2), falling
+// back to the --as override for a disc whose signature is absent or damaged. An
+// unrecognized, un-overridden signature yields machineUnknown — the single
+// source of the signature→machine and --as-alias table, shared by detect (single
+// disc) and the backup-set grouping (a directory).
+func machineForSig(sig, override string) machine {
+	switch sig {
+	case sigVR9:
+		return machineVR9
+	case sigVR5:
+		return machineVR5
+	}
+	switch strings.ToLower(strings.TrimSpace(override)) {
+	case "vr9", "vr9-cd":
+		return machineVR9
+	case "vr5", "vr5-cd":
+		return machineVR5
+	}
+	return machineUnknown
 }
