@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"iter"
 	"os"
+	"strings"
 
 	"github.com/andapony/vsx/internal/cd"
+	"github.com/andapony/vsx/internal/hdd"
 )
 
 // Options controls a single extraction run.
@@ -23,9 +25,11 @@ import (
 // all output the moment any deviation appears — is an output policy the command
 // layer applies over a best-effort Result, not an extraction mode.
 type Options struct {
-	// As forces the Source profile ("vr9"/"vr5") when byte-level detection
-	// finds no known archive signature; "" means autodetect (§5.2). It is the
-	// --as override.
+	// As forces the Source type when byte-level detection is ambiguous on
+	// damaged media; "" means autodetect. "hdd" forces the HDD live-disk path
+	// (§4); "cd" forces the CD archive path and autodetects the machine; "vr9"/
+	// "vr5" force the CD path as that machine when no archive signature is found
+	// (§5.2). It is the --as override.
 	As string
 }
 
@@ -127,13 +131,41 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 		f.Close()
 		return Result{}, fmt.Errorf("core: stat source: %w", err)
 	}
+	devs := &[]Deviation{}
+
+	// HDD path (§4): a Roland live disk is identified structurally — its MBR and
+	// a partition BPB's "Roland  " OEM ID — before the CD signature check, since
+	// an HDD image carries no CD archive signature at user-data offset 0.
+	// --as=hdd forces it; any other override forces the CD path; "" autodetects,
+	// trying HDD first and falling through to CD when the image is not Roland.
+	asLower := strings.ToLower(strings.TrimSpace(opts.As))
+	forceHDD := asLower == "hdd"
+	forceCD := asLower != "" && !forceHDD
+	if forceHDD || !forceCD {
+		vol, herr := hdd.Open(f, info.Size())
+		if herr == nil {
+			return newHDDResult(f, vol, devs)
+		}
+		if forceHDD {
+			f.Close()
+			return Result{}, fmt.Errorf("core: --as=hdd forced but this image is not a Roland live disk: %w", herr)
+		}
+		// autodetect, not a Roland disk: fall through to the CD path.
+	}
+
 	img, err := cd.New(f, info.Size())
 	if err != nil {
 		f.Close()
 		return Result{}, fmt.Errorf("core: %w", err)
 	}
 
-	p, err := detect(img, opts.As)
+	// "cd" forces the CD path but leaves the machine to signature autodetection;
+	// "vr9"/"vr5" additionally force the machine when no signature is present.
+	cdOverride := opts.As
+	if asLower == "cd" {
+		cdOverride = ""
+	}
+	p, err := detect(img, cdOverride)
 	if err != nil {
 		f.Close()
 		return Result{}, err
@@ -143,7 +175,6 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 		return Result{}, fmt.Errorf("core: source identified but not yet supported by this build (only single-disc CD); machine=%v", p.machine)
 	}
 
-	devs := &[]Deviation{}
 	if img.Cooked() {
 		// §5/§10 data-integrity rule: dd rips are frequently truncated or
 		// block-shifted. Best-effort attempts it with this warning; the strict
@@ -167,7 +198,26 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 		return Result{}, err
 	}
 
-	tracks := func(yield func(TrackResult, error) bool) {
+	return Result{tracks: streamClosing(f, inner), deviations: devs}, nil
+}
+
+// newHDDResult builds a streaming Result over a Roland live disk, keeping the
+// Source file open for the lifetime of the track iterator and closing it when
+// iteration ends — the same ownership contract as the CD path.
+func newHDDResult(f *os.File, vol *hdd.Volume, devs *[]Deviation) (Result, error) {
+	inner, err := extractHDD(vol, NewDecoder(), devs)
+	if err != nil {
+		f.Close()
+		return Result{}, err
+	}
+	return Result{tracks: streamClosing(f, inner), deviations: devs}, nil
+}
+
+// streamClosing wraps a per-track iterator so the Source file is closed once
+// iteration ends (whether drained or abandoned early) — the file must stay open
+// for the whole lazy walk, since PCM is read on demand.
+func streamClosing(f *os.File, inner iter.Seq2[TrackResult, error]) iter.Seq2[TrackResult, error] {
+	return func(yield func(TrackResult, error) bool) {
 		defer f.Close()
 		for tr, e := range inner {
 			if !yield(tr, e) {
@@ -175,5 +225,4 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 			}
 		}
 	}
-	return Result{tracks: tracks, deviations: devs}, nil
 }

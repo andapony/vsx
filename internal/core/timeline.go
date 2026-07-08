@@ -13,6 +13,17 @@ const samplesPerFrame = 16
 type timelineEvent struct {
 	start, end, trimmed uint32
 	fileID              uint16
+	clusterCount        uint16 // event 0x18: take cluster count, for the §8.3 HDD integrity check
+}
+
+// audioSpec is the per-song audio parameters that decode a take and describe its
+// output: the native sample rate (§3), the RDAC format code (§2), and the
+// storage cluster size in bytes (§4.2/§5.4, for MT2 page-padding). They travel
+// together from a song's header into every one of its v-tracks.
+type audioSpec struct {
+	sampleRate  int
+	format      Format
+	clusterSize int
 }
 
 // buildVTrack replays one v-track's events into a single PCM buffer (§8): events
@@ -24,7 +35,7 @@ type timelineEvent struct {
 // name is the user-assigned track name to carry into the result ("" for the
 // default/blank name, §6.1). track/vtrack are the 1-based indices this v-track
 // occupies; loc is the human-readable location prefix for deviations.
-func buildVTrack(evs []timelineEvent, takes map[uint16]PCM, origin int, song SongRef, track, vtrack, sampleRate int, name string, format Format) (TrackResult, bool, []Deviation) {
+func buildVTrack(evs []timelineEvent, takes map[uint16]PCM, origin int, song SongRef, track, vtrack int, name string, aud audioSpec) (TrackResult, bool, []Deviation) {
 	loc := fmt.Sprintf("song %d / track %d / v-track %d", song.Number, track, vtrack)
 
 	hasAudio := false
@@ -43,7 +54,7 @@ func buildVTrack(evs []timelineEvent, takes map[uint16]PCM, origin int, song Son
 
 	var devs []Deviation
 	buf := make([]int32, length)
-	var firstCluster uint16
+	var firstCluster, firstClusterCount uint16
 	for _, e := range evs {
 		if e.end <= e.start {
 			devs = append(devs, Deviation{Location: loc, SpecRef: "§8", Severity: SeverityWarning,
@@ -60,6 +71,7 @@ func buildVTrack(evs []timelineEvent, takes map[uint16]PCM, origin int, song Son
 		}
 		if firstCluster == 0 {
 			firstCluster = e.fileID
+			firstClusterCount = e.clusterCount
 		}
 		take, ok := takes[e.fileID]
 		if !ok {
@@ -80,12 +92,13 @@ func buildVTrack(evs []timelineEvent, takes map[uint16]PCM, origin int, song Son
 		Track:  track,
 		VTrack: vtrack,
 		Name:   name,
-		PCM:    PCM{Samples: buf, BitDepth: bitDepthForFormat(format)},
+		PCM:    PCM{Samples: buf, BitDepth: bitDepthForFormat(aud.format)},
 		Take: Take{
 			FirstCluster: int(firstCluster),
-			ClusterSize:  blockSize,
-			Format:       format,
-			SampleRate:   sampleRate,
+			ClusterCount: int(firstClusterCount),
+			ClusterSize:  aud.clusterSize,
+			Format:       aud.format,
+			SampleRate:   aud.sampleRate,
 		},
 	}, true, devs
 }
