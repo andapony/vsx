@@ -22,11 +22,34 @@ package rdac
 
 import "fmt"
 
+// DecodeStats reports decode anomalies a caller should surface as deviations
+// rather than the codec printing them. UnknownPatternBlocks counts RDAC blocks
+// whose pattern index selected a dispatch case the reference decoder leaves
+// unimplemented ("never occurs", §12 / Appendix A): vsx renders those blocks as
+// silence — the same output the reference produces — and records the count here
+// so the extractor can report it (ADR-0002/0004) instead of writing to stdout.
+type DecodeStats struct {
+	// UnknownBlockOffsets holds the 0-based block index of each such block, in
+	// decode order (its length is the count). Block i covers decoded samples
+	// [i*16, i*16+16); the caller maps that into the take's timeline to judge
+	// whether the silence lands in audio the output actually uses.
+	UnknownBlockOffsets []int
+}
+
 // DecodeMT2Cluster decodes an MT2 stream that was stored with the given
 // cluster (page) size. Use 32768 for VS-880EX disks (32 KB clusters).
 func DecodeMT2Cluster(compressed []byte, clusterSize int) ([]int16, error) {
+	s, _, err := DecodeMT2ClusterStats(compressed, clusterSize)
+	return s, err
+}
+
+// DecodeMT2ClusterStats is DecodeMT2Cluster plus the DecodeStats anomaly
+// report; the stats-free wrapper delegates here so existing callers are
+// unchanged.
+func DecodeMT2ClusterStats(compressed []byte, clusterSize int) ([]int16, DecodeStats, error) {
+	var stats DecodeStats
 	if clusterSize <= 0 {
-		return nil, fmt.Errorf("invalid clusterSize %d", clusterSize)
+		return nil, stats, fmt.Errorf("invalid clusterSize %d", clusterSize)
 	}
 	blocksPerPage := clusterSize / 12
 	padBytes := clusterSize - blocksPerPage*12
@@ -43,7 +66,9 @@ func DecodeMT2Cluster(compressed []byte, clusterSize int) ([]int16, error) {
 	for i := 0; i < numBlocks; i++ {
 		copy(in, compressed[pos:pos+12])
 		pos += 12
-		decodeMT2Frame12(d0, in, out)
+		if decodeMT2Frame12(d0, in, out) {
+			stats.UnknownBlockOffsets = append(stats.UnknownBlockOffsets, i)
+		}
 		for j := 0; j < 16; j++ {
 			samples = append(samples, int16(limit16(out[j])))
 		}
@@ -52,11 +77,18 @@ func DecodeMT2Cluster(compressed []byte, clusterSize int) ([]int16, error) {
 			pos += padBytes // eat page padding
 		}
 	}
-	return samples, nil
+	return samples, stats, nil
 }
 
 // DecodeMT1Correct decodes an MT1 stream (16-byte blocks, no page padding).
 func DecodeMT1Correct(compressed []byte) ([]int16, error) {
+	s, _, err := DecodeMT1CorrectStats(compressed)
+	return s, err
+}
+
+// DecodeMT1CorrectStats is DecodeMT1Correct plus the DecodeStats anomaly report.
+func DecodeMT1CorrectStats(compressed []byte) ([]int16, DecodeStats, error) {
+	var stats DecodeStats
 	numBlocks := len(compressed) / 16
 	samples := make([]int16, 0, numBlocks*16)
 	out := make([]int, 16)
@@ -64,16 +96,22 @@ func DecodeMT1Correct(compressed []byte) ([]int16, error) {
 	d0 := 0
 	for i := 0; i < numBlocks; i++ {
 		copy(in, compressed[i*16:(i+1)*16])
-		decodeMT1Frame(d0, in, out)
+		if decodeMT1Frame(d0, in, out) {
+			stats.UnknownBlockOffsets = append(stats.UnknownBlockOffsets, i)
+		}
 		for j := 0; j < 16; j++ {
 			samples = append(samples, int16(limit16(out[j])))
 		}
 		d0 = out[15]
 	}
-	return samples, nil
+	return samples, stats, nil
 }
 
-func decodeMT1Frame(d0 int, in []uint8, out []int) {
+// decodeMT1Frame decodes one 16-byte MT1 block into out. It returns true when
+// the block's pattern index selects an unimplemented ("never occurs") case:
+// out is then left silent (as the reference decoder does) and the caller counts
+// it as a DecodeStats anomaly instead of the decoder printing to stdout.
+func decodeMT1Frame(d0 int, in []uint8, out []int) (unknown bool) {
 
 	// Decodes a 16-byte MT1 RDAC block into 16-bit samples.
 
@@ -91,10 +129,10 @@ func decodeMT1Frame(d0 int, in []uint8, out []int) {
 
 	case 0:
 		/* Unknown - never occurs? */
-		//        fmt.Printf("DANGER! %d %v\n",pattern, in)
+		unknown = true
 	case 1:
 		/* Unknown - never occurs? */
-		fmt.Printf("DANGER! %d %v\n", pattern, in)
+		unknown = true
 	case 2:
 		patternStr := patternB
 		applyPattern(in, out, patternStr)
@@ -162,13 +200,13 @@ func decodeMT1Frame(d0 int, in []uint8, out []int) {
 
 	case 12:
 		/* Unknown - never occurs? */
-		fmt.Printf("DANGER! %d %v\n", pattern, in)
+		unknown = true
 	case 13:
 		/* Unknown - never occurs? */
-		fmt.Printf("DANGER! %d %v\n", pattern, in)
+		unknown = true
 	case 14:
 		/* Unknown - never occurs? */
-		fmt.Printf("DANGER! %d %v\n", pattern, in)
+		unknown = true
 	case 15:
 		patternStr := patternA
 		applyPattern(in, out, patternStr)
@@ -286,28 +324,33 @@ func decodeMT1Frame(d0 int, in []uint8, out []int) {
 
 	case 32:
 		/* Unknown - never occurs? */
-		fmt.Printf("DANGER! %d %v\n", pattern, in)
+		unknown = true
 	case 33:
 		/* Unknown - never occurs? */
-		fmt.Printf("DANGER! %d %v\n", pattern, in)
+		unknown = true
 	case 34:
 		/* Unknown - never occurs? */
-		fmt.Printf("DANGER! %d %v\n", pattern, in)
+		unknown = true
 	case 35:
 		/* Unknown - never occurs? */
-		fmt.Printf("DANGER! %d %v\n", pattern, in)
+		unknown = true
 	case 36:
 		/* Unknown - never occurs? */
-		fmt.Printf("DANGER! %d %v\n", pattern, in)
+		unknown = true
 	default:
 	}
 
 	preventOverflow16(out)
+	return
 }
 
 //*****************************************************************************
 
-func decodeMT2Frame12(d0 int, in []uint8, out []int) {
+// decodeMT2Frame12 decodes one 12-byte MT2 block into out. It returns true when
+// the block's pattern index selects an unimplemented ("never occurs") case:
+// out is then left silent (as the reference decoder does) and the caller counts
+// it as a DecodeStats anomaly instead of the decoder printing to stdout.
+func decodeMT2Frame12(d0 int, in []uint8, out []int) (unknown bool) {
 
 	// Decodes a 12-byte MT2 RDAC block into 16 16-bit samples.
 	// (The upstream comment said "16-byte" but the MT2 block is 12 bytes —
@@ -404,7 +447,7 @@ func decodeMT2Frame12(d0 int, in []uint8, out []int) {
 
 	case 12:
 		/* Unknown - never occurs? */
-		fmt.Printf("DANGER! %d %v\n", pattern, in)
+		unknown = true
 	case 13:
 		patternStr := pattern12F
 		applyPattern12(in, out, patternStr)
@@ -535,23 +578,24 @@ func decodeMT2Frame12(d0 int, in []uint8, out []int) {
 
 	case 32:
 		/* Unknown - never occurs? */
-		fmt.Printf("DANGER! %d %v\n", pattern, in)
+		unknown = true
 	case 33:
 		/* Unknown - never occurs? */
-		fmt.Printf("DANGER! %d %v\n", pattern, in)
+		unknown = true
 	case 34:
 		/* Unknown - never occurs? */
-		fmt.Printf("DANGER! %d %v\n", pattern, in)
+		unknown = true
 	case 35:
 		/* Unknown - never occurs? */
-		fmt.Printf("DANGER! %d %v\n", pattern, in)
+		unknown = true
 	case 36:
 		/* Unknown - never occurs? */
-		fmt.Printf("DANGER! %d %v\n", pattern, in)
+		unknown = true
 	default:
 	}
 
 	preventOverflow16(out)
+	return
 }
 
 //*****************************************************************************
