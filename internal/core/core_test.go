@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/andapony/vsx/internal/vsfix"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -69,17 +70,30 @@ func TestExtractNonexistentSourceErrors(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestExtractExistingSourceReturnsResult verifies that Extract on an openable
-// Source succeeds and returns a Result that is safe to range over. The
-// format/structure walk is not implemented in this foundation slice, so no
-// tracks are expected yet — the point is that the streaming façade is in place.
-func TestExtractExistingSourceReturnsResult(t *testing.T) {
+// TestExtractUnidentifiableSourceErrors verifies that a source whose bytes match
+// no known archive and whose length is not even valid CD geometry is a hard
+// error, not a silent empty success (issue #3: unidentifiable input exits with
+// an error).
+func TestExtractUnidentifiableSourceErrors(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "src.img")
 	require.NoError(t, os.WriteFile(path, []byte("placeholder"), 0o644))
+
+	_, err := Extract(path, Options{})
+	require.Error(t, err)
+}
+
+// TestExtractEmptyArchiveIsSafe verifies that a well-formed VR9 archive with no
+// audio (one song, an empty event log) extracts cleanly: no tracks, no
+// deviations, safe to range over.
+func TestExtractEmptyArchiveIsSafe(t *testing.T) {
+	disc := vsfix.Disc{SetID: [4]byte{1, 2, 3, 4}, Songs: []vsfix.Song{{Number: 1, Name: "EMPTY"}}}
+	path := filepath.Join(t.TempDir(), "empty.bin")
+	require.NoError(t, os.WriteFile(path, disc.BuildRaw(), 0o644))
 
 	r, err := Extract(path, Options{})
 	require.NoError(t, err)
 	for range r.Tracks() {
-		require.Fail(t, "foundation Extract should not yet yield tracks")
+		require.Fail(t, "an empty archive should yield no tracks")
 	}
+	assert.Empty(t, r.Deviations())
 }
