@@ -55,6 +55,14 @@ func buildVTrack(evs []timelineEvent, takes map[uint16]PCM, origin int, song Son
 	var devs []Deviation
 	buf := make([]int32, length)
 	var firstCluster, firstClusterCount uint16
+	// Track unimplemented-codec-pattern blocks (§12 / Appendix A) that are
+	// actually copied into this v-track's output. The decoder decodes a take in
+	// full, so such blocks routinely occur in a take's unused tail (padding /
+	// §9 Optimize remnants past the recorded audio); those never reach the WAV
+	// and must not be reported. Only silence that lands in output audio is a
+	// real deviation, and the earliest one gives its timeline position.
+	unknownInOutput := 0
+	firstUnknownAt := -1
 	for _, e := range evs {
 		if e.end <= e.start {
 			devs = append(devs, Deviation{Location: loc, SpecRef: "§8", Severity: SeverityWarning,
@@ -85,6 +93,25 @@ func buildVTrack(evs []timelineEvent, takes map[uint16]PCM, origin int, song Son
 			devs = append(devs, Deviation{Location: loc, SpecRef: "§10", Severity: SeverityWarning,
 				Message: fmt.Sprintf("take %#04x shorter than event span; %d samples padded with silence", e.fileID, span-copied)})
 		}
+		// Count only the unimplemented-pattern blocks whose samples this event
+		// actually copied. overlay copies copied contiguous take-samples starting
+		// at cLo (= trim, or trim-at when the event starts before the origin and
+		// the head is clipped), mapping take-sample s to output sample at+(s-trim).
+		cLo := trim - min(at, 0)
+		for _, b := range take.UnknownBlockOffsets {
+			s0 := b * samplesPerFrame
+			if s0 >= cLo && s0 < cLo+copied {
+				unknownInOutput++
+				if out := at + (s0 - trim); firstUnknownAt < 0 || out < firstUnknownAt {
+					firstUnknownAt = out
+				}
+			}
+		}
+	}
+	if unknownInOutput > 0 {
+		devs = append(devs, Deviation{Location: loc, SpecRef: "§2", Severity: SeverityWarning,
+			Message: fmt.Sprintf("%d RDAC block(s) used an unimplemented codec pattern (Appendix A) within "+
+				"output audio (first at ~%.3fs); rendered silent", unknownInOutput, float64(firstUnknownAt)/float64(aud.sampleRate))})
 	}
 
 	return TrackResult{

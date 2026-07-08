@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/andapony/vsx/internal/vsfix"
@@ -57,6 +58,81 @@ func TestExtractFlagSetRecordWritesAudio(t *testing.T) {
 
 	require.Len(t, tracks, 1, "the flag=1 record's v-track is emitted")
 	assert.True(t, anyNonZero(tracks[0].PCM.Samples), "flag=1 with a real take writes audio, not silence")
+}
+
+// mixedTake is 4 implemented-pattern MT2 blocks (0x00 -> pattern 0) followed by
+// 4 unimplemented-pattern blocks (0xFF -> pattern 36). Used to place the
+// "never occurs" blocks in a known position within a take.
+func mixedTake() []byte { return append(mt2Bytes(0x00, 4), mt2Bytes(0xFF, 4)...) }
+
+// hasUnknownDeviation reports whether any deviation is the routed
+// unimplemented-codec-pattern warning.
+func hasUnknownDeviation(devs []Deviation) *Deviation {
+	for i := range devs {
+		if strings.Contains(devs[i].Message, "unimplemented codec pattern") {
+			return &devs[i]
+		}
+	}
+	return nil
+}
+
+// TestUnimplementedCodecPatternInOutputIsReported locks the routing of the
+// vendored codec's "never occurs" branches through the Decoder seam: when a
+// take's unimplemented-pattern blocks are actually copied into output audio,
+// the silence is surfaced as a best-effort Warning Deviation (with its timeline
+// position) rather than printed to stdout as the upstream codec did.
+func TestUnimplementedCodecPatternInOutputIsReported(t *testing.T) {
+	disc := vsfix.Disc{
+		SetID: [4]byte{2, 2, 2, 2},
+		Songs: []vsfix.Song{{
+			Number: 1, Name: "UNKNOWN",
+			Takes: []vsfix.Take{{FileID: 0x0100, Name: "TAKE0100", MT2: mixedTake()}},
+			// Span covers all 8 blocks, so the 4 unknown ones land in the output.
+			Events: []vsfix.Event{{Start: 12, End: 20, FileID: 0x0100, Track: 1, VTrack: 1}},
+		}},
+	}
+	path := filepath.Join(t.TempDir(), "unknown.bin")
+	require.NoError(t, os.WriteFile(path, disc.BuildRaw(), 0o644))
+
+	r, err := Extract(path, Options{})
+	require.NoError(t, err)
+	tracks, devs := collectTracks(t, r)
+
+	require.Len(t, tracks, 1, "the take still yields a v-track")
+	found := hasUnknownDeviation(devs)
+	require.NotNil(t, found, "unimplemented-pattern silence reaching output is reported; got %+v", devs)
+	assert.Equal(t, SeverityWarning, found.Severity, "recoverable-with-silence is a warning, not an error")
+	assert.Contains(t, found.Message, "4", "reports how many blocks reached output")
+	assert.Contains(t, found.Message, "output audio")
+}
+
+// TestUnimplementedCodecPatternInUnusedTailIsNotReported is the other half:
+// unimplemented-pattern blocks that live only in a take region the timeline
+// never copies (an over-allocated tail / §9 Optimize remnant) must NOT be
+// reported — that silence never reaches the WAV. This is the false alarm the
+// timeline-aware check exists to suppress (confirmed on real VS-880EX media,
+// where whole songs decoded thousands of such tail blocks yet sounded perfect).
+func TestUnimplementedCodecPatternInUnusedTailIsNotReported(t *testing.T) {
+	disc := vsfix.Disc{
+		SetID: [4]byte{3, 3, 3, 3},
+		Songs: []vsfix.Song{{
+			Number: 1, Name: "TAILONLY",
+			Takes: []vsfix.Take{{FileID: 0x0100, Name: "TAKE0100", MT2: mixedTake()}},
+			// Span covers only the first 4 (implemented) blocks; the 0xFF tail is
+			// decoded but never copied into output.
+			Events: []vsfix.Event{{Start: 12, End: 16, FileID: 0x0100, Track: 1, VTrack: 1}},
+		}},
+	}
+	path := filepath.Join(t.TempDir(), "tail.bin")
+	require.NoError(t, os.WriteFile(path, disc.BuildRaw(), 0o644))
+
+	r, err := Extract(path, Options{})
+	require.NoError(t, err)
+	tracks, devs := collectTracks(t, r)
+
+	require.Len(t, tracks, 1, "the used (implemented-pattern) region still yields a v-track")
+	assert.Nil(t, hasUnknownDeviation(devs),
+		"silence in an unused take tail must not be reported; got %+v", devs)
 }
 
 // TestExtractVR9EndToEnd drives a synthetic single-disc VR9 archive through the
