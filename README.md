@@ -10,6 +10,11 @@ See [`CONTEXT.md`](./CONTEXT.md) for the project's coined vocabulary and
 [`ROLAND-VS-FORMAT-SPEC.md`](./ROLAND-VS-FORMAT-SPEC.md) for the authoritative
 format specification. Design decisions are recorded in [`docs/adr/`](./docs/adr).
 
+Need to make the images first? See
+[`docs/obtaining-images.md`](./docs/obtaining-images.md) for how to dump VS HDDs
+and CD archives raw — and how to tell whether a rip is trustworthy (the ripping
+chain won't tell you on its own).
+
 > **Status:** extraction works end-to-end for both machines (VS-1880/VR5 and
 > VS-880EX/VR9) across all supported Sources — HDD live-disk images, single-disc
 > CD archives, and multi-disc CD backup sets (`§5.6` spanning) — with best-effort
