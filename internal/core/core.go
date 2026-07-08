@@ -16,11 +16,13 @@ import (
 )
 
 // Options controls a single extraction run.
+//
+// The best-effort/strict posture (ADR-0002) is deliberately not an Option: core
+// always extracts best-effort and reports every Deviation it finds, and the
+// caller decides what to do with them. The strict conformance gate — withhold
+// all output the moment any deviation appears — is an output policy the command
+// layer applies over a best-effort Result, not an extraction mode.
 type Options struct {
-	// Strict selects the pass/fail conformance gate that aborts on the first
-	// deviation with no output, instead of the default best-effort posture
-	// (ADR-0002 / CONTEXT.md).
-	Strict bool
 	// As forces the Source profile ("vr9"/"vr5") when byte-level detection
 	// finds no known archive signature; "" means autodetect (§5.2). It is the
 	// --as override.
@@ -67,8 +69,9 @@ type Take struct {
 // resolved metadata that produced it. Empty v-tracks yield no TrackResult.
 type TrackResult struct {
 	Song   SongRef
-	Track  int // physical track index (1-based)
-	VTrack int // virtual-track index within the track
+	Track  int    // physical track index (1-based)
+	VTrack int    // virtual-track index within the track
+	Name   string // user-assigned track name, "" when the name is the default/blank (§6.1)
 	PCM    PCM
 	Take   Take
 }
@@ -110,10 +113,10 @@ func (r Result) Deviations() []Deviation {
 }
 
 // Extract opens the Source at sourcePath, identifies it, and returns a streaming
-// Result. For this slice the only extractor is the single-disc VS-880EX (VR9) CD
-// path (issue #3); other machines and HDD sources are identified but reported as
-// not yet supported. The Source file stays open for the lifetime of the track
-// iterator and is closed when iteration ends.
+// Result. This build handles the single-disc CD path for both machines — the
+// VS-880EX (VR9, issue #3) and the VS-1880 (VR5, issue #4); HDD sources are
+// identified but reported as not yet supported. The Source file stays open for
+// the lifetime of the track iterator and is closed when iteration ends.
 func Extract(sourcePath string, opts Options) (Result, error) {
 	f, err := os.Open(sourcePath)
 	if err != nil {
@@ -135,17 +138,30 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 		f.Close()
 		return Result{}, err
 	}
-	if p.kind != kindCD || p.machine != machineVR9 {
+	if p.kind != kindCD {
 		f.Close()
-		return Result{}, fmt.Errorf("core: source identified but not yet supported by this build (only single-disc VS-880EX CD); machine=%v", p.machine)
+		return Result{}, fmt.Errorf("core: source identified but not yet supported by this build (only single-disc CD); machine=%v", p.machine)
 	}
 
 	devs := &[]Deviation{}
 	if img.Cooked() {
+		// §5/§10 data-integrity rule: dd rips are frequently truncated or
+		// block-shifted. Best-effort attempts it with this warning; the strict
+		// gate (command layer) turns any deviation into a hard abort.
 		*devs = append(*devs, Deviation{Location: "disc", SpecRef: "§5",
 			Severity: SeverityWarning, Message: "cooked (dd) rip; raw 2352-byte-frame dumps are recommended for data integrity"})
 	}
-	inner, err := extractVR9(img, NewDecoder(), devs)
+
+	var inner iter.Seq2[TrackResult, error]
+	switch p.machine {
+	case machineVR9:
+		inner, err = extractVR9(img, NewDecoder(), devs)
+	case machineVR5:
+		inner, err = extractVR5(img, NewDecoder(), devs)
+	default:
+		f.Close()
+		return Result{}, fmt.Errorf("core: source identified but not yet supported by this build; machine=%v", p.machine)
+	}
 	if err != nil {
 		f.Close()
 		return Result{}, err
