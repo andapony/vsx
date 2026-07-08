@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: build & test (media-independent)
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0" # pure Go, single static binary (ADR-0004/0006)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Verify formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      # VSX_TEST_MEDIA is intentionally unset here, so media-dependent tests
+      # skip and only the media-independent suite runs (ADR-0005). No -race:
+      # the race detector needs cgo, and vsx is deliberately pure Go.
+      - name: Test
+        run: go test ./...
