@@ -68,14 +68,37 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 // runBestEffort extracts in the default posture (ADR-0002): every recoverable
-// v-track is written as it streams, deviations are reported afterward, and the
-// exit code is non-zero if any deviation occurred — the audio is written either
-// way.
+// v-track is written as it streams, and the exit code is non-zero if any
+// deviation occurred — the audio is written either way.
+//
+// Deviations are streamed in context rather than batched at the end (issue #28):
+// core's Deviations() slice grows as the walk advances (core.go documents that a
+// song's deviations are gathered as its tracks are consumed), so after each
+// v-track any newly-surfaced deviations are flushed to stderr, next to the audio
+// they concern. For a song that yields audio this puts its deviations right after
+// its first track and before the next song's output — so someone watching a long
+// run sees each problem in place instead of a dump after everything. A song that
+// yields no tracks (e.g. no event list, or all-empty v-tracks) contributes no
+// track to flush against, so its deviations surface at the next flush — after the
+// following song's first track, or, for the last song, at the post-loop flush.
 func runBestEffort(result core.Result, outDir string, verbose, quiet bool, stdout, stderr io.Writer) int {
-	// Write one mono WAV per populated v-track, listing each on the stdout
-	// manifest. Deviations are collected during the walk and reported after.
 	songs := map[int]bool{}
 	nTracks := 0
+
+	// flush reports every deviation not yet printed, advancing printed to the
+	// current total. Quiet mode still advances printed (suppressing only the
+	// output), so the post-loop summary count and the exit-code gate stay correct.
+	printed := 0
+	flush := func() {
+		devs := result.Deviations()
+		if !quiet {
+			for _, d := range devs[printed:] {
+				fmt.Fprintf(stderr, "deviation [%s] %s: %s\n", d.SpecRef, d.Location, d.Message)
+			}
+		}
+		printed = len(devs)
+	}
+
 	for tr, err := range result.Tracks() {
 		if err != nil {
 			fmt.Fprintf(stderr, "vsx: %v\n", err)
@@ -95,18 +118,16 @@ func runBestEffort(result core.Result, outDir string, verbose, quiet bool, stdou
 		if verbose && !quiet {
 			fmt.Fprintf(stderr, "extracted %s (%d samples @ %d Hz)\n", path, len(tr.PCM.Samples), tr.Take.SampleRate)
 		}
+		flush()
 	}
 
-	devs := result.Deviations()
+	flush() // trailing deviations: a no-track last song, or a Source with no audio.
 	if !quiet {
-		for _, d := range devs {
-			fmt.Fprintf(stderr, "deviation [%s] %s: %s\n", d.SpecRef, d.Location, d.Message)
-		}
 		fmt.Fprintf(stderr, "vsx: extracted %d v-track(s) across %d song(s); %d deviation(s)\n",
-			nTracks, len(songs), len(devs))
+			nTracks, len(songs), printed)
 	}
 
-	if len(devs) > 0 {
+	if printed > 0 {
 		return exitDeviations
 	}
 	return exitOK
