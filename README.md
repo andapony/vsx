@@ -10,10 +10,13 @@ See [`CONTEXT.md`](./CONTEXT.md) for the project's coined vocabulary and
 [`ROLAND-VS-FORMAT-SPEC.md`](./ROLAND-VS-FORMAT-SPEC.md) for the authoritative
 format specification. Design decisions are recorded in [`docs/adr/`](./docs/adr).
 
-> **Status:** foundation. The module, the codec seam, WAV encoding, the
-> `core.Extract` façade, and the CLI skeleton are in place; the HDD/CD
-> format-and-structure walk that populates the extraction stream lands in
-> later slices.
+> **Status:** extraction works end-to-end for both machines (VS-1880/VR5 and
+> VS-880EX/VR9) across all supported Sources — HDD live-disk images, single-disc
+> CD archives, and multi-disc CD backup sets (`§5.6` spanning) — with best-effort
+> and `--strict` modes, in-context deviation reporting, and optional `--stereo`
+> pairing (`§8.4`). Deferred: the HDD↔CD byte-identical cross-check (`§5.7`, a
+> ready skipped test slot pending matching media) and the JSON `--report` output
+> (v1.1).
 
 ## Build
 
@@ -39,8 +42,10 @@ the repository. CI runs the media-independent suite.
 | Path | What |
 |---|---|
 | `cmd/vsx` | CLI: argument parsing, the stdout-manifest / stderr-diagnostics split, exit codes |
-| `internal/core` | the `Extract` façade, `Result`/`Deviation` types, and the `Decoder` seam |
-| `internal/wav` | `wav.Encode` — mono PCM to RIFF/WAVE bytes |
+| `internal/core` | the `Extract` façade, detection, per-machine extractors, timeline building, `Result`/`Deviation` types, and the `Decoder` seam |
+| `internal/cd` | CD "Song Copy Archive" reader: frame/user-data geometry, header-block walk, multi-disc spanning |
+| `internal/hdd` | HDD live-disk reader: Roland MBR, byte-swapped FAT16, directory/take resolution |
+| `internal/wav` | `wav.Encode`/`wav.EncodeStereo` — PCM to RIFF/WAVE bytes |
 | `internal/rdac` | the vendored golden RDAC codec (see below) |
 | `internal/testutil` | media-skip and golden-master PCM-hash test helpers |
 

@@ -145,10 +145,11 @@ func (r Result) Deviations() []Deviation {
 }
 
 // Extract opens the Source at sourcePath, identifies it, and returns a streaming
-// Result. This build handles the single-disc CD path for both machines — the
-// VS-880EX (VR9, issue #3) and the VS-1880 (VR5, issue #4); HDD sources are
-// identified but reported as not yet supported. The Source file stays open for
-// the lifetime of the track iterator and is closed when iteration ends.
+// Result. It handles every Source this build supports: HDD live-disk images
+// (§4), single-disc CD Song Copy Archives, and multi-disc CD backup sets (a
+// directory, §5.6), for both machines — the VS-880EX (VR9) and the VS-1880
+// (VR5). The Source file(s) stay open for the lifetime of the track iterator and
+// are closed when iteration ends.
 func Extract(sourcePath string, opts Options) (Result, error) {
 	info, err := os.Stat(sourcePath)
 	if err != nil {
@@ -204,8 +205,10 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	if p.kind != kindCD {
+		// Defensive: the HDD path is taken above and detect only ever identifies
+		// a CD archive here, so a non-CD kind at this point is unexpected.
 		f.Close()
-		return Result{}, fmt.Errorf("core: source identified but not yet supported by this build (only single-disc CD); machine=%v", p.machine)
+		return Result{}, fmt.Errorf("core: unexpected non-CD source kind after CD detection; machine=%v", p.machine)
 	}
 
 	if img.Cooked() {
