@@ -41,6 +41,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	strict := fs.Bool("strict", false, "conformance gate: abort on the first deviation with no output")
 	as := fs.String("as", "", "force the source type when detection is ambiguous (hdd|cd|vr9|vr5)")
+	stereo := fs.Bool("stereo", false, "pair adjacent matched tracks into one interleaved stereo WAV (§8.4 heuristic)")
 	outDir := fs.String("o", ".", "output directory to write song folders into")
 	verbose := fs.Bool("v", false, "verbose: log each extracted v-track to stderr")
 	quiet := fs.Bool("q", false, "quiet: suppress deviations and the summary")
@@ -54,7 +55,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	result, err := core.Extract(fs.Arg(0), core.Options{As: *as})
+	result, err := core.Extract(fs.Arg(0), core.Options{As: *as, Stereo: *stereo})
 	if err != nil {
 		fmt.Fprintf(stderr, "vsx: %v\n", err)
 		return exitError
@@ -88,6 +89,9 @@ func runBestEffort(result core.Result, outDir string, verbose, quiet bool, stdou
 		fmt.Fprintln(stdout, path)
 		songs[tr.Song.Number] = true
 		nTracks++
+		if !quiet {
+			reportPair(stderr, tr)
+		}
 		if verbose && !quiet {
 			fmt.Fprintf(stderr, "extracted %s (%d samples @ %d Hz)\n", path, len(tr.PCM.Samples), tr.Take.SampleRate)
 		}
@@ -147,6 +151,9 @@ func runStrict(result core.Result, outDir string, quiet bool, stdout, stderr io.
 			return exitError
 		}
 		fmt.Fprintln(stdout, path)
+		if !quiet {
+			reportPair(stderr, tr)
+		}
 	}
 	if !quiet {
 		fmt.Fprintf(stderr, "vsx: strict: clean image; %d v-track(s) written\n", len(buffered))
@@ -166,21 +173,25 @@ func strictAbort(devs []core.Deviation, quiet bool, stderr io.Writer) int {
 }
 
 // writeTrack encodes one v-track's PCM to a WAV file under
-// "<outDir>/<NN> - <name>/T<track>-V<vtrack>[ <track name>].wav" and returns the
-// path written. A user-assigned track name is appended when present (§6.1), so
-// named tracks are easy to find; the T/V indices always lead so files sort
-// predictably even when names are blank. The song folder is created on demand,
-// so v-tracks of the same song share it.
+// "<outDir>/<NN> - <name>/<label>[ <track name>].wav" and returns the path
+// written. label is "T<track>-V<vtrack>" for a mono v-track, or
+// "T<lo>+<hi>-V<vtrack>" for a §8.4 stereo pair (so the pairing is visible in
+// the filename); a stereo result is encoded interleaved (left = lower track). A
+// user-assigned track name is appended when present (§6.1), so named tracks are
+// easy to find; the T/V indices always lead so files sort predictably even when
+// names are blank. The song folder is created on demand, so v-tracks of the
+// same song share it.
 func writeTrack(outDir string, tr core.TrackResult) (string, error) {
-	wavBytes, err := wav.Encode(tr.PCM.Samples, tr.Take.SampleRate, tr.PCM.BitDepth)
+	label := trackLabel(tr)
+	wavBytes, err := encodeTrack(tr)
 	if err != nil {
-		return "", fmt.Errorf("encoding song %d T%d-V%d: %w", tr.Song.Number, tr.Track, tr.VTrack, err)
+		return "", fmt.Errorf("encoding song %d %s: %w", tr.Song.Number, label, err)
 	}
 	dir := filepath.Join(outDir, songDir(tr.Song))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("creating %s: %w", dir, err)
 	}
-	name := fmt.Sprintf("T%d-V%d", tr.Track, tr.VTrack)
+	name := label
 	if n := sanitize(tr.Name); n != "" {
 		name += " " + n
 	}
@@ -189,6 +200,35 @@ func writeTrack(outDir string, tr core.TrackResult) (string, error) {
 		return "", fmt.Errorf("writing %s: %w", path, err)
 	}
 	return path, nil
+}
+
+// encodeTrack encodes a result to WAV bytes: interleaved stereo when it is a
+// §8.4 pair (Right non-nil), mono otherwise.
+func encodeTrack(tr core.TrackResult) ([]byte, error) {
+	if tr.Right != nil {
+		return wav.EncodeStereo(tr.PCM.Samples, tr.Right.Samples, tr.Take.SampleRate, tr.PCM.BitDepth)
+	}
+	return wav.Encode(tr.PCM.Samples, tr.Take.SampleRate, tr.PCM.BitDepth)
+}
+
+// trackLabel is the leading "T…-V…" filename component: "T<track>-V<vtrack>"
+// for a mono v-track, "T<lo>+<hi>-V<vtrack>" for a stereo pair.
+func trackLabel(tr core.TrackResult) string {
+	if tr.Right != nil {
+		return fmt.Sprintf("T%d+%d-V%d", tr.Track, tr.PairTrack, tr.VTrack)
+	}
+	return fmt.Sprintf("T%d-V%d", tr.Track, tr.VTrack)
+}
+
+// reportPair notes each formed §8.4 stereo pair on stderr so a false positive is
+// visible (issue #8); it is a no-op for a mono result. The report is independent
+// of -v because a pairing decision always warrants a look.
+func reportPair(stderr io.Writer, tr core.TrackResult) {
+	if tr.Right == nil {
+		return
+	}
+	fmt.Fprintf(stderr, "vsx: stereo pair: song %d tracks %d+%d (§8.4)\n",
+		tr.Song.Number, tr.Track, tr.PairTrack)
 }
 
 // songDir builds a song's output folder name: the zero-padded catalog number
