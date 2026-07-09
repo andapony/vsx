@@ -33,7 +33,11 @@ func List(sourcePath string, opts Options) ([]SongInfo, []Deviation, error) {
 		return nil, nil, fmt.Errorf("core: stat source: %w", err)
 	}
 	if info.IsDir() {
-		return listSet(sourcePath, opts)
+		paths, err := discPathsInDir(sourcePath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("core: reading directory %q: %w", sourcePath, err)
+		}
+		return listSet(paths, opts)
 	}
 
 	h, err := identifySource(sourcePath, info, opts)
@@ -65,15 +69,23 @@ func List(sourcePath string, opts Options) ([]SongInfo, []Deviation, error) {
 	return songs, devs, nil
 }
 
-// listSet enumerates a directory's multi-disc CD backup set (§5.6), grouping
-// it exactly as extractSet does, then summarises each song over the stitched
-// reader without decoding any take.
-func listSet(dir string, opts Options) ([]SongInfo, []Deviation, error) {
+// ListSet treats the given disc-image files as one multi-disc CD backup set
+// (§5.6) — the same grouping a directory of those files gets — and enumerates
+// its songs. Use it when the discs are passed as separate paths rather than a
+// folder.
+func ListSet(paths []string, opts Options) ([]SongInfo, []Deviation, error) {
+	return listSet(paths, opts)
+}
+
+// listSet enumerates a list of CD dump files as one multi-disc backup set
+// (§5.6), grouping them exactly as extractSet does, then summarises each song
+// over the stitched reader without decoding any take.
+func listSet(paths []string, opts Options) ([]SongInfo, []Deviation, error) {
 	if strings.EqualFold(strings.TrimSpace(opts.As), "hdd") {
-		return nil, nil, fmt.Errorf("core: --as=hdd but %q is a directory (an HDD source is a single image, not a directory)", dir)
+		return nil, nil, fmt.Errorf("core: --as=hdd is not valid for a multi-disc CD backup set (an HDD source is a single image)")
 	}
 
-	set, err := openBackupSet(dir, opts)
+	set, err := openBackupSet(paths, opts)
 	if err != nil {
 		return nil, nil, err
 	}

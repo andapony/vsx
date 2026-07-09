@@ -35,26 +35,18 @@ type assembledSet struct {
 	devs    []Deviation
 }
 
-// openBackupSet groups the CD dumps in a directory into a single backup set
-// (§5.2/§5.6): it opens every entry, keeps those that are CD archives of one
+// openBackupSet groups the given CD dump files into a single backup set
+// (§5.2/§5.6): it opens every path, keeps those that are CD archives of one
 // set (chosen as described in chooseSet), orders them by disc index, and builds
 // a stitched reader over the contiguous run from disc 0. Foreign files (a
 // different set ID or a non-archive file) and missing discs are reported as
 // deviations rather than failing the run; a set with no index-0 anchor cannot
 // be read and is a hard error.
-func openBackupSet(dir string, opts Options) (*assembledSet, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("core: reading directory %q: %w", dir, err)
-	}
-
+func openBackupSet(paths []string, opts Options) (*assembledSet, error) {
 	var discs []setDisc
 	var devs []Deviation
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		d, dev, ok := classifyDisc(filepath.Join(dir, e.Name()), e.Name(), opts)
+	for _, p := range paths {
+		d, dev, ok := classifyDisc(p, filepath.Base(p), opts)
 		if dev != nil {
 			devs = append(devs, *dev)
 		}
@@ -63,7 +55,7 @@ func openBackupSet(dir string, opts Options) (*assembledSet, error) {
 		}
 	}
 	if len(discs) == 0 {
-		return nil, fmt.Errorf("core: no CD backup-set discs found in directory %q", dir)
+		return nil, fmt.Errorf("core: no CD backup-set discs found in the given source")
 	}
 
 	chosen, setID, foreign := chooseSet(discs)
@@ -106,6 +98,24 @@ func openBackupSet(dir string, opts Options) (*assembledSet, error) {
 		files:   files,
 		devs:    devs,
 	}, nil
+}
+
+// discPathsInDir lists a directory's non-directory entries as full paths, in
+// the order os.ReadDir yields them (lexical by name) — the disc-file path list
+// openBackupSet consumes for the directory form of a backup set.
+func discPathsInDir(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		paths = append(paths, filepath.Join(dir, e.Name()))
+	}
+	return paths, nil
 }
 
 // classifyDisc opens one directory entry and decides whether it is a CD archive
