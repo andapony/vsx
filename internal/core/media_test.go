@@ -341,3 +341,27 @@ func TestVR9HDDtoCDCrossCheck(t *testing.T) {
 	}
 	t.Skip("HDD↔CD cross-check pending a named HDD+CD song pairing in the corpus")
 }
+
+// TestHDDListKeysAreUnique runs List against real Roland VS HDD images (when
+// VSX_TEST_MEDIA is set) and asserts every song's SongKey is distinct. The key
+// is partition.enumeration-index (PP.OOO), standing in for the VS device's own
+// song number precisely because that number is not unique across a
+// multi-partition disk; a regression that let two songs collide on the same
+// key would silently overwrite one song's output folder with another's.
+func TestHDDListKeysAreUnique(t *testing.T) {
+	dir := testutil.RequireMedia(t)
+	images := findHDDImages(t, dir)
+	if len(images) == 0 {
+		t.Skipf("no HDD images under %s", dir)
+	}
+	for _, path := range images {
+		songs, _, err := List(path, Options{})
+		require.NoError(t, err)
+		seen := map[SongKey]bool{}
+		for _, s := range songs {
+			assert.False(t, seen[s.Key], "%s: duplicate key %s", filepath.Base(path), s.Key)
+			seen[s.Key] = true
+		}
+		t.Logf("%s: %d songs, all keys unique", filepath.Base(path), len(songs))
+	}
+}

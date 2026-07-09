@@ -284,33 +284,38 @@ func groupSongs(files []fileEntry) []songGroup {
 // devs immediately and those found during replay as each song is consumed. The
 // iterator processes one song at a time so a large Source is never fully
 // materialized (bounded memory, per the foundation).
-func extractVR9(img cdSource, dec Decoder, devs *[]Deviation, stereo bool, report func(Progress)) (iter.Seq2[TrackResult, error], error) {
+func extractVR9(img cdSource, ctx extractCtx) (iter.Seq2[TrackResult, error], error) {
 	files, wdevs, err := walkVR9(img)
 	if err != nil {
 		return nil, err
 	}
-	*devs = append(*devs, wdevs...)
+	*ctx.devs = append(*ctx.devs, wdevs...)
 	groups := groupSongs(files)
 
 	return func(yield func(TrackResult, error) bool) {
 		for i, g := range groups {
-			report(Progress{Phase: ProgressExtracting, Song: i + 1, TotalSongs: len(groups), SongName: g.name})
-			tracks, sdevs := extractSong(img, dec, g, stereo)
-			*devs = append(*devs, sdevs...)
+			key := cdSongKey(int(g.number))
+			if !ctx.selected(key) {
+				continue
+			}
+			ctx.report(Progress{Phase: ProgressExtracting, Song: i + 1, TotalSongs: len(groups), SongName: g.name})
+			tracks, sdevs := extractSong(img, ctx.dec, g, key, ctx.stereo)
+			*ctx.devs = append(*ctx.devs, sdevs...)
 			for _, tr := range tracks {
 				if !yield(tr, nil) {
 					return
 				}
 			}
 		}
-		report(Progress{Phase: ProgressDone})
+		ctx.report(Progress{Phase: ProgressDone})
 	}, nil
 }
 
 // extractSong replays one song's event log against its takes into per-v-track
 // results. Takes are resolved by FileID (§5.7: VR9 CD FileIDs equal the HDD FAT
-// start clusters the event records carry) and decoded on demand.
-func extractSong(img cdSource, dec Decoder, g songGroup, stereo bool) ([]TrackResult, []Deviation) {
+// start clusters the event records carry) and decoded on demand. key is the
+// song's SongKey, computed by the caller from its catalog SONG number.
+func extractSong(img cdSource, dec Decoder, g songGroup, key SongKey, stereo bool) ([]TrackResult, []Deviation) {
 	loc := fmt.Sprintf("song %d", g.number)
 	elst, ok := findEventList(g.files)
 	if !ok {
@@ -337,7 +342,7 @@ func extractSong(img cdSource, dec Decoder, g songGroup, stereo bool) ([]TrackRe
 	takes, takeDevs := decodeTakes(img, dec, g.files, refs, format, loc)
 	devs = append(devs, takeDevs...)
 
-	tracks, tlDevs := buildVR9Tracks(events, takes, SongRef{Number: int(g.number), Name: g.name},
+	tracks, tlDevs := buildVR9Tracks(events, takes, SongRef{Key: key, Number: int(g.number), Name: g.name},
 		audioSpec{sampleRate: sampleRate, format: format, clusterSize: blockSize}, stereo)
 	devs = append(devs, tlDevs...)
 	return tracks, devs

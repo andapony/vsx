@@ -45,6 +45,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	outDir := fs.String("o", ".", "output directory to write song folders into")
 	verbose := fs.Bool("v", false, "verbose: log each extracted v-track to stderr")
 	quiet := fs.Bool("q", false, "quiet: suppress deviations and the summary")
+	list := fs.Bool("list", false, "list the songs on the source and exit (no extraction)")
+	var songs songSel
+	fs.Var(&songs, "song", "extract only the given song(s) by list key (repeatable; e.g. --song 2.7)")
 	fs.Usage = func() { usage(stderr, fs) }
 
 	if err := fs.Parse(args); err != nil {
@@ -55,11 +58,45 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
+	if *list {
+		catalog, devs, err := core.List(fs.Arg(0), core.Options{As: *as})
+		if err != nil {
+			fmt.Fprintf(stderr, "vsx: %v\n", err)
+			return exitError
+		}
+		if len(songs.keys) > 0 {
+			fmt.Fprintln(stderr, "vsx: --song ignored with --list")
+		}
+		return runList(catalog, devs, stdout, stderr)
+	}
+
+	if len(songs.keys) > 0 {
+		catalog, _, err := core.List(fs.Arg(0), core.Options{As: *as})
+		if err != nil {
+			fmt.Fprintf(stderr, "vsx: %v\n", err)
+			return exitError
+		}
+		have := map[core.SongKey]bool{}
+		for _, si := range catalog {
+			have[si.Key] = true
+		}
+		var missing []string
+		for _, k := range songs.keys {
+			if !have[k] {
+				missing = append(missing, k.String())
+			}
+		}
+		if len(missing) > 0 {
+			fmt.Fprintf(stderr, "vsx: no song %s on this source; run 'vsx --list' to see available songs\n", strings.Join(missing, ", "))
+			return exitUsage
+		}
+	}
+
 	// A live progress line is drawn only for an interactive user, and never
 	// alongside -v (whose per-track lines are the progress) or -q. When off, the
 	// status line degrades to plain writes, so piped/CI output is unchanged.
 	status := newStatusLine(stderr, isTTY(stderr) && !*quiet && !*verbose)
-	opts := core.Options{As: *as, Stereo: *stereo, Progress: status.progress}
+	opts := core.Options{As: *as, Stereo: *stereo, Progress: status.progress, Songs: songs.keys}
 
 	result, err := core.Extract(fs.Arg(0), opts)
 	if err != nil {
@@ -268,11 +305,11 @@ func reportPair(status *statusLine, tr core.TrackResult) {
 		tr.Song.Number, tr.Track, tr.PairTrack)
 }
 
-// songDir builds a song's output folder name: the zero-padded catalog number
-// (always present, so two songs with identical names stay distinct) followed by
-// the song name.
+// songDir builds a song's output folder name: the stable key (unique per Source)
+// followed by the song name, so two songs never collide even across HDD
+// partitions (where the device song number is not globally unique).
 func songDir(s core.SongRef) string {
-	return fmt.Sprintf("%02d - %s", s.Number, sanitize(s.Name))
+	return fmt.Sprintf("%s - %s", s.Key.FolderName(), sanitize(s.Name))
 }
 
 // sanitize strips path separators from a song name so it is safe as a single
@@ -288,6 +325,8 @@ func usage(w io.Writer, fs *flag.FlagSet) {
 	fmt.Fprint(w, "usage: vsx [flags] <source>\n\n")
 	fmt.Fprint(w, "  <source>  path to an HDD image, a single CD backup-set dump, or a\n")
 	fmt.Fprint(w, "            directory of one set's disc dumps (multi-disc, §5.6)\n\n")
+	fmt.Fprint(w, "  vsx --list <source>          list the songs on a source (no extraction)\n")
+	fmt.Fprint(w, "  vsx --song 2.7 <source>      extract only the given song(s)\n\n")
 	fmt.Fprint(w, "flags:\n")
 	fs.PrintDefaults()
 }

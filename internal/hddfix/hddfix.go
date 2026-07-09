@@ -190,10 +190,10 @@ func (p Partition) build() []byte {
 	// Allocate and store every object, in song-then-file order, collecting the
 	// root-directory entries (one per song subdirectory).
 	var rootEntries []dirEntry
-	for _, s := range p.Songs {
+	for i, s := range p.Songs {
 		subFirst := b.buildSong(s)
 		rootEntries = append(rootEntries, dirEntry{
-			name8:     s.dirBase(), // "SONG0001"
+			name8:     songDirBase(i), // "SONG0000", "SONG0001", ... — creation order
 			ext3:      s.Ext,
 			attr:      attrSubdir,
 			firstClus: subFirst,
@@ -369,11 +369,16 @@ func (s Song) rateByte() byte {
 	return s.Rate
 }
 
-// dirBase renders the song subdirectory's 8-char base name, "SONG%04d" style —
-// on real media the base is SONG + a 4-hex source index, but any distinct
-// SONGxxxx base parses identically; the extension is what selects the machine.
-func (s Song) dirBase() string {
-	return "SONG" + hex4(s.Number)
+// songDirBase renders the i'th song subdirectory's 8-char base name (0-based,
+// creation order within the partition): "SONG0000", "SONG0001", and so on. Real
+// media names a folder by its own FAT creation slot, independent of the SONG.VRx
+// catalog number the song carries as metadata — a Song Copy duplicates a song
+// into a new destination folder while its SONG.VRx keeps recording the *source*
+// number (§4.4), so two distinct folders (even across partitions) can legitimately
+// share the same stored catalog number. Any distinct SONGxxxx base parses
+// identically; the extension is what selects the machine.
+func songDirBase(i int) string {
+	return "SONG" + hex4(uint16(i))
 }
 
 // eventList encodes the song's EVENTLST.<ext>: the VR5 positional V-track table

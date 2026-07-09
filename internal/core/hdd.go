@@ -20,23 +20,27 @@ import (
 // only steps that differ from CD; event-list parsing and timeline replay are the
 // shared §6/§8 kernels, since the HDD EVENTLST formats (§4.5/§4.6) are
 // byte-identical to their CD counterparts.
-func extractHDD(vol *hdd.Volume, dec Decoder, devs *[]Deviation, stereo bool, report func(Progress)) (iter.Seq2[TrackResult, error], error) {
+func extractHDD(vol *hdd.Volume, ctx extractCtx) (iter.Seq2[TrackResult, error], error) {
 	songs, err := vol.Songs()
 	if err != nil {
 		return nil, fmt.Errorf("core: enumerating HDD songs: %w", err)
 	}
 	return func(yield func(TrackResult, error) bool) {
 		for i, s := range songs {
-			report(Progress{Phase: ProgressExtracting, Song: i + 1, TotalSongs: len(songs), SongName: s.Name})
-			tracks, sdevs := extractHDDSong(dec, s, stereo)
-			*devs = append(*devs, sdevs...)
+			key := hddSongKey(s.Partition, s.Index)
+			if !ctx.selected(key) {
+				continue
+			}
+			ctx.report(Progress{Phase: ProgressExtracting, Song: i + 1, TotalSongs: len(songs), SongName: s.Name})
+			tracks, sdevs := extractHDDSong(ctx.dec, s, ctx.stereo)
+			*ctx.devs = append(*ctx.devs, sdevs...)
 			for _, tr := range tracks {
 				if !yield(tr, nil) {
 					return
 				}
 			}
 		}
-		report(Progress{Phase: ProgressDone})
+		ctx.report(Progress{Phase: ProgressDone})
 	}, nil
 }
 
@@ -68,7 +72,8 @@ func extractHDDSong(dec Decoder, song hdd.Song, stereo bool) ([]TrackResult, []D
 			Message: "SONG file shorter than its 20-byte header; cannot determine format or rate"}}
 	}
 	loc := fmt.Sprintf("song %d", number)
-	ref := SongRef{Number: number, Name: name}
+	key := hddSongKey(song.Partition, song.Index)
+	ref := SongRef{Key: key, Number: number, Name: name}
 	format := Format(formatCode)
 	sampleRate, rateDev := rateFromByte(rateByte, loc)
 	aud := audioSpec{sampleRate: sampleRate, format: format, clusterSize: song.ClusterSize()}
