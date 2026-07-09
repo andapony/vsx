@@ -147,7 +147,7 @@ func classifyDisc(path, name string, opts Options) (setDisc, *Deviation, bool) {
 		return setDisc{}, &Deviation{Location: name, SpecRef: "§5.2", Severity: SeverityWarning,
 			Message: fmt.Sprintf("could not read archive signature: %v; skipped", err)}, false
 	}
-	m := machineForSig(string(sig), opts.As)
+	m := machineForSig(string(sig), opts.As.machine)
 	if m == machineUnknown {
 		f.Close()
 		return setDisc{}, &Deviation{Location: name, SpecRef: "§5.2", Severity: SeverityWarning,
