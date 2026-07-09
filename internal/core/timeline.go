@@ -26,17 +26,18 @@ type audioSpec struct {
 	clusterSize int
 }
 
-// buildVTrack replays one v-track's events into a single PCM buffer (§8): events
-// apply in stored order, each writing its [start,end) range over whatever is
-// there (later wins); gaps stay silent; an erase (fileID 0) writes silence. The
-// origin (VR9 = 12, VR5 = 0, §3) is subtracted so samples land at zero. A
+// buildVTrack replays one v-track group's events into a single PCM buffer (§8):
+// events apply in stored order, each writing its [start,end) range over whatever
+// is there (later wins); gaps stay silent; an erase (fileID 0) writes silence.
+// The origin (VR9 = 12, VR5 = 0, §3) is subtracted so samples land at zero. A
 // v-track with no take-bearing event is not populated and yields ok=false.
 //
-// name is the user-assigned track name to carry into the result ("" for the
-// default/blank name, §6.1). track/vtrack are the 1-based indices this v-track
-// occupies; loc is the human-readable location prefix for deviations.
-func buildVTrack(evs []timelineEvent, takes map[uint16]PCM, origin int, song SongRef, track, vtrack int, name string, aud audioSpec) (TrackResult, bool, []Deviation) {
-	loc := fmt.Sprintf("song %d / track %d / v-track %d", song.Number, track, vtrack)
+// The group carries its own 1-based track/v-track indices and user-assigned name
+// ("" for the default/blank name, §6.1); song and origin come from the enclosing
+// songTimeline.
+func buildVTrack(g vtrackGroup, takes map[uint16]PCM, origin int, song SongRef, aud audioSpec) (TrackResult, bool, []Deviation) {
+	evs := g.events
+	loc := fmt.Sprintf("song %d / track %d / v-track %d", song.Number, g.track, g.vtrack)
 
 	hasAudio := false
 	length := 0
@@ -116,9 +117,9 @@ func buildVTrack(evs []timelineEvent, takes map[uint16]PCM, origin int, song Son
 
 	return TrackResult{
 		Song:   song,
-		Track:  track,
-		VTrack: vtrack,
-		Name:   name,
+		Track:  g.track,
+		VTrack: g.vtrack,
+		Name:   g.name,
 		PCM:    PCM{Samples: buf, BitDepth: bitDepthForFormat(aud.format)},
 		Take: Take{
 			FirstCluster: int(firstCluster),
