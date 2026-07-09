@@ -223,21 +223,11 @@ func userTrackName(name string) string {
 }
 
 // groupVR5Songs partitions the enumerated files into songs by header song name
-// (§5.4: VR5 associates a file to a song by its 12-byte name), preserving
-// first-seen (walk) order for deterministic output.
+// (§5.4: VR5 associates a file to a song by its 12-byte name).
 func groupVR5Songs(files []fileEntry) []songGroup {
-	idx := map[string]int{}
-	var groups []songGroup
-	for _, f := range files {
-		gi, ok := idx[f.songName]
-		if !ok {
-			idx[f.songName] = len(groups)
-			groups = append(groups, songGroup{name: f.songName})
-			gi = len(groups) - 1
-		}
-		groups[gi].files = append(groups[gi].files, f)
-	}
-	return groups
+	return groupBy(files,
+		func(f fileEntry) string { return f.songName },
+		func(f fileEntry) songGroup { return songGroup{name: f.songName} })
 }
 
 // vr5SongNumber resolves a song's catalog number from its `SONG    VR5` file
