@@ -284,7 +284,7 @@ func groupSongs(files []fileEntry) []songGroup {
 // devs immediately and those found during replay as each song is consumed. The
 // iterator processes one song at a time so a large Source is never fully
 // materialized (bounded memory, per the foundation).
-func extractVR9(img cdSource, dec Decoder, devs *[]Deviation, stereo bool) (iter.Seq2[TrackResult, error], error) {
+func extractVR9(img cdSource, dec Decoder, devs *[]Deviation, stereo bool, report func(Progress)) (iter.Seq2[TrackResult, error], error) {
 	files, wdevs, err := walkVR9(img)
 	if err != nil {
 		return nil, err
@@ -293,7 +293,8 @@ func extractVR9(img cdSource, dec Decoder, devs *[]Deviation, stereo bool) (iter
 	groups := groupSongs(files)
 
 	return func(yield func(TrackResult, error) bool) {
-		for _, g := range groups {
+		for i, g := range groups {
+			report(Progress{Phase: ProgressExtracting, Song: i + 1, TotalSongs: len(groups), SongName: g.name})
 			tracks, sdevs := extractSong(img, dec, g, stereo)
 			*devs = append(*devs, sdevs...)
 			for _, tr := range tracks {
@@ -302,6 +303,7 @@ func extractVR9(img cdSource, dec Decoder, devs *[]Deviation, stereo bool) (iter
 				}
 			}
 		}
+		report(Progress{Phase: ProgressDone})
 	}, nil
 }
 
