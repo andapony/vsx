@@ -76,7 +76,7 @@ func buildTracks(st songTimeline, takes map[uint16]PCM, song SongRef, aud audioS
 	var built []builtTrack
 	var devs []Deviation
 	for _, g := range st.groups {
-		tr, ok, d := buildVTrack(g.events, takes, st.origin, song, g.track, g.vtrack, g.name, aud)
+		tr, ok, d := buildVTrack(g, takes, st.origin, song, aud)
 		devs = append(devs, d...)
 		if ok {
 			built = append(built, builtTrack{result: tr, events: g.events})
