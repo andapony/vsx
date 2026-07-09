@@ -94,27 +94,17 @@ func extractHDDSong(dec Decoder, song hdd.Song, stereo bool) ([]TrackResult, []D
 		devs = append(devs, *rateDev)
 	}
 
-	switch song.Ext {
-	case "VR5":
-		entries, edevs := parseVR5EventList(eldata)
-		devs = append(devs, edevs...)
-		refs, counts := gatherVR5Refs(entries)
-		takes, tdevs := decodeHDDTakes(files, dec, refs, counts, format, loc)
-		devs = append(devs, tdevs...)
-		tracks, tldevs := buildVR5Tracks(entries, takes, ref, aud, stereo)
-		return tracks, append(devs, tldevs...)
-	case "VR9":
-		events, edevs := parseVR9Log(eldata)
-		devs = append(devs, edevs...)
-		refs, counts := gatherVR9Refs(events)
-		takes, tdevs := decodeHDDTakes(files, dec, refs, counts, format, loc)
-		devs = append(devs, tdevs...)
-		tracks, tldevs := buildVR9Tracks(events, takes, ref, aud, stereo)
-		return tracks, append(devs, tldevs...)
-	default:
-		return nil, append(devs, Deviation{Location: loc, SpecRef: "§4.3", Severity: SeverityError,
-			Message: fmt.Sprintf("unsupported machine extension %q", song.Ext)})
+	mf, extDev := hddFormat(song.Ext, loc)
+	if extDev != nil {
+		return nil, append(devs, *extDev)
 	}
+	st, edevs := mf.parseTimeline(eldata)
+	devs = append(devs, edevs...)
+	refs, counts := gatherRefs(st)
+	takes, tdevs := decodeHDDTakes(files, dec, refs, counts, format, loc)
+	devs = append(devs, tdevs...)
+	tracks, tldevs := buildTracks(st, takes, ref, aud, stereo)
+	return tracks, append(devs, tldevs...)
 }
 
 // parseSongFile reads the §4.4 SONG.VRx fields both machines share: the source
@@ -141,45 +131,17 @@ func findHDDFile(files []hdd.Entry, base string) (hdd.Entry, bool) {
 	return hdd.Entry{}, false
 }
 
-// gatherVR5Refs collects the take FileIDs a VR5 timeline references, in
-// first-seen order, together with the highest 0x18 cluster count claimed for
-// each (for the §8.3 integrity check).
-func gatherVR5Refs(entries []vr5Entry) ([]uint16, map[uint16]int) {
-	var refs []uint16
-	counts := map[uint16]int{}
-	seen := map[uint16]bool{}
-	for _, ent := range entries {
-		for _, e := range ent.events {
-			addRef(&refs, counts, seen, e.fileID, e.clusterCount)
-		}
+// hddFormat resolves an HDD song directory's machine extension (§4.3) to its
+// event-list adapter, or returns the "unsupported machine extension" deviation
+// when the extension is not one this build handles — so extract and list share
+// one home for that §4.3 message.
+func hddFormat(ext, loc string) (machineFormat, *Deviation) {
+	mf := formatFor(machineForExt(ext))
+	if mf == nil {
+		return nil, &Deviation{Location: loc, SpecRef: "§4.3", Severity: SeverityError,
+			Message: fmt.Sprintf("unsupported machine extension %q", ext)}
 	}
-	return refs, counts
-}
-
-// gatherVR9Refs is gatherVR5Refs for a VR9 flat log.
-func gatherVR9Refs(events []vr9Event) ([]uint16, map[uint16]int) {
-	var refs []uint16
-	counts := map[uint16]int{}
-	seen := map[uint16]bool{}
-	for _, e := range events {
-		addRef(&refs, counts, seen, e.fileID, e.clusterCount)
-	}
-	return refs, counts
-}
-
-// addRef records a take reference (skipping erases, FileID 0) and tracks the
-// largest cluster count claimed for it.
-func addRef(refs *[]uint16, counts map[uint16]int, seen map[uint16]bool, id, clusterCount uint16) {
-	if id == 0 {
-		return
-	}
-	if !seen[id] {
-		seen[id] = true
-		*refs = append(*refs, id)
-	}
-	if c := int(clusterCount); c > counts[id] {
-		counts[id] = c
-	}
+	return mf, nil
 }
 
 // decodeHDDTakes resolves each referenced take by filename (§4.3) — format the

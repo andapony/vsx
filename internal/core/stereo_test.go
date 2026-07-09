@@ -45,7 +45,7 @@ func TestPairMatchedAdjacentTracks(t *testing.T) {
 	}
 
 	// Off by default: two mono v-tracks, no stereo result.
-	mono, devs := buildVR9Tracks(events, takes, song1, mt2Spec(), false)
+	mono, devs := buildTracks(vr9Timeline(events), takes, song1, mt2Spec(), false)
 	require.Empty(t, devs)
 	require.Len(t, mono, 2)
 	for _, tr := range mono {
@@ -53,7 +53,7 @@ func TestPairMatchedAdjacentTracks(t *testing.T) {
 	}
 
 	// With --stereo: one interleaved stereo result, left = lower track.
-	st, devs := buildVR9Tracks(events, takes, song1, mt2Spec(), true)
+	st, devs := buildTracks(vr9Timeline(events), takes, song1, mt2Spec(), true)
 	require.Empty(t, devs)
 	require.Len(t, st, 1, "the matched pair collapses to one result")
 	pair := st[0]
@@ -80,7 +80,7 @@ func TestNoPairWhenTrackHasMultipleVTracks(t *testing.T) {
 		{start: 12, end: 16, fileID: 0xB, code: 1},
 		{start: 12, end: 16, fileID: 0xC, code: 8},
 	}
-	trs, devs := buildVR9Tracks(events, takes, song1, mt2Spec(), true)
+	trs, devs := buildTracks(vr9Timeline(events), takes, song1, mt2Spec(), true)
 	require.Empty(t, devs)
 	require.Len(t, trs, 3, "ambiguous track stays mono; nothing pairs")
 	for _, tr := range trs {
@@ -96,7 +96,7 @@ func TestNoPairWhenEventsDiffer(t *testing.T) {
 		{start: 12, end: 16, fileID: 0xA, code: 0}, // T1/V1
 		{start: 12, end: 20, fileID: 0xB, code: 8}, // T2/V1: different End
 	}
-	trs, devs := buildVR9Tracks(events, takes, song1, mt2Spec(), true)
+	trs, devs := buildTracks(vr9Timeline(events), takes, song1, mt2Spec(), true)
 	require.Empty(t, devs)
 	require.Len(t, trs, 2, "mismatched events do not pair")
 	for _, tr := range trs {
@@ -114,7 +114,7 @@ func TestNoPairWhenTracksNotAdjacent(t *testing.T) {
 		{start: 12, end: 16, fileID: 0xA, code: 0},
 		{start: 12, end: 16, fileID: 0xB, code: 16},
 	}
-	trs, devs := buildVR9Tracks(events, takes, song1, mt2Spec(), true)
+	trs, devs := buildTracks(vr9Timeline(events), takes, song1, mt2Spec(), true)
 	require.Empty(t, devs)
 	require.Len(t, trs, 2, "non-adjacent tracks do not pair")
 	assert.Nil(t, findTrack(t, trs, 1).Right)

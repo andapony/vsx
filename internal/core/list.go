@@ -110,22 +110,23 @@ func listSet(paths []string, opts Options) ([]SongInfo, []Deviation, error) {
 }
 
 // summarizeVTracks computes a song's populated v-track count and overall
-// timeline length in frames from its parsed per-v-track event groups. It
-// mirrors buildVTrack's hasAudio/length computation (§8) — a v-track is
-// populated iff it has at least one take-bearing event (fileID != 0), and its
-// length is the maximum origin-relative end frame across every event in the
-// group (audio or erase) — but reports frames rather than samples (the caller
-// renders a duration as frames*samplesPerFrame/sampleRate) and never touches a
-// take's audio, so no Decoder is needed to answer either question.
-func summarizeVTracks(groups [][]timelineEvent, origin int) (vtracks, frames int) {
-	for _, evs := range groups {
+// timeline length in frames from its parsed songTimeline — the same neutral
+// timeline the extractor's buildTracks consumes, so List and Extract agree by
+// construction. It mirrors buildVTrack's hasAudio/length computation (§8) — a
+// v-track is populated iff it has at least one take-bearing event (fileID != 0),
+// and its length is the maximum origin-relative end frame across every event in
+// the group (audio or erase) — but reports frames rather than samples (the
+// caller renders a duration as frames*samplesPerFrame/sampleRate) and never
+// touches a take's audio, so no Decoder is needed to answer either question.
+func summarizeVTracks(st songTimeline) (vtracks, frames int) {
+	for _, g := range st.groups {
 		hasAudio := false
 		length := 0
-		for _, e := range evs {
+		for _, e := range g.events {
 			if e.fileID != 0 {
 				hasAudio = true
 			}
-			if end := int(e.end) - origin; end > length {
+			if end := int(e.end) - st.origin; end > length {
 				length = end
 			}
 		}
@@ -137,34 +138,6 @@ func summarizeVTracks(groups [][]timelineEvent, origin int) (vtracks, frames int
 		}
 	}
 	return vtracks, frames
-}
-
-// vr9EventGroups groups a parsed VS-880EX event log by v-track code (§8.2),
-// the same grouping buildVR9Tracks performs, reduced to the machine-neutral
-// timelineEvent shape summarizeVTracks consumes.
-func vr9EventGroups(events []vr9Event) [][]timelineEvent {
-	byCode := map[int][]timelineEvent{}
-	for _, e := range events {
-		byCode[e.code] = append(byCode[e.code], timelineEvent{
-			start: e.start, end: e.end, trimmed: e.trimmed, fileID: e.fileID, clusterCount: e.clusterCount,
-		})
-	}
-	groups := make([][]timelineEvent, 0, len(byCode))
-	for _, evs := range byCode {
-		groups = append(groups, evs)
-	}
-	return groups
-}
-
-// vr5EventGroups extracts each VS-1880 V-track table entry's event list — the
-// table is already positionally grouped by v-track (§6.1) — into the
-// machine-neutral shape summarizeVTracks consumes.
-func vr5EventGroups(entries []vr5Entry) [][]timelineEvent {
-	groups := make([][]timelineEvent, len(entries))
-	for i, ent := range entries {
-		groups[i] = ent.events
-	}
-	return groups
 }
 
 // listVR9 enumerates a VS-880EX CD archive's songs and summarises each from
@@ -204,14 +177,14 @@ func summarizeVR9Song(img cdSource, g songGroup, key SongKey) (SongInfo, []Devia
 		return base, []Deviation{{Location: loc, SpecRef: "§6.2", Severity: SeverityError,
 			Message: fmt.Sprintf("reading event list: %v", err)}}
 	}
-	events, devs := parseVR9Log(data)
+	st, devs := vr9{}.parseTimeline(data)
 
 	sampleRate, rateDev := rateFromByte(elst.rateByte, loc)
 	if rateDev != nil {
 		devs = append(devs, *rateDev)
 	}
 
-	base.VTracks, base.Frames = summarizeVTracks(vr9EventGroups(events), vr9OriginFrames)
+	base.VTracks, base.Frames = summarizeVTracks(st)
 	base.SampleRate = sampleRate
 	return base, devs
 }
@@ -255,14 +228,14 @@ func summarizeVR5Song(img cdSource, g songGroup, number int, key SongKey) (SongI
 		return base, []Deviation{{Location: loc, SpecRef: "§6.1", Severity: SeverityError,
 			Message: fmt.Sprintf("reading event list: %v", err)}}
 	}
-	entries, devs := parseVR5EventList(data)
+	st, devs := vr5{}.parseTimeline(data)
 
 	sampleRate, rateDev := rateFromByte(elst.rateByte, loc)
 	if rateDev != nil {
 		devs = append(devs, *rateDev)
 	}
 
-	base.VTracks, base.Frames = summarizeVTracks(vr5EventGroups(entries), vr5Origin)
+	base.VTracks, base.Frames = summarizeVTracks(st)
 	base.SampleRate = sampleRate
 	return base, devs
 }
@@ -335,18 +308,12 @@ func summarizeHDDSong(song hdd.Song) (SongInfo, []Deviation) {
 			Message: fmt.Sprintf("reading event list: %v", err)})
 	}
 
-	switch song.Ext {
-	case "VR5":
-		entries, edevs := parseVR5EventList(eldata)
-		devs = append(devs, edevs...)
-		base.VTracks, base.Frames = summarizeVTracks(vr5EventGroups(entries), vr5Origin)
-	case "VR9":
-		events, edevs := parseVR9Log(eldata)
-		devs = append(devs, edevs...)
-		base.VTracks, base.Frames = summarizeVTracks(vr9EventGroups(events), vr9OriginFrames)
-	default:
-		return base, append(devs, Deviation{Location: loc, SpecRef: "§4.3", Severity: SeverityError,
-			Message: fmt.Sprintf("unsupported machine extension %q", song.Ext)})
+	mf, extDev := hddFormat(song.Ext, loc)
+	if extDev != nil {
+		return base, append(devs, *extDev)
 	}
+	st, edevs := mf.parseTimeline(eldata)
+	devs = append(devs, edevs...)
+	base.VTracks, base.Frames = summarizeVTracks(st)
 	return base, devs
 }
