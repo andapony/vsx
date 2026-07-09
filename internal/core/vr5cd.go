@@ -257,7 +257,7 @@ func userTrackName(name string) string {
 // and replay deviations as each song is consumed. Files are grouped into songs
 // by header song name (§5.4), one song processed at a time so a large Source is
 // never fully materialized.
-func extractVR5(img cdSource, dec Decoder, devs *[]Deviation, stereo bool) (iter.Seq2[TrackResult, error], error) {
+func extractVR5(img cdSource, dec Decoder, devs *[]Deviation, stereo bool, report func(Progress)) (iter.Seq2[TrackResult, error], error) {
 	files, wdevs, err := walkVR5(img)
 	if err != nil {
 		return nil, err
@@ -267,6 +267,7 @@ func extractVR5(img cdSource, dec Decoder, devs *[]Deviation, stereo bool) (iter
 
 	return func(yield func(TrackResult, error) bool) {
 		for i, g := range groups {
+			report(Progress{Phase: ProgressExtracting, Song: i + 1, TotalSongs: len(groups), SongName: g.name})
 			tracks, sdevs := extractVR5Song(img, dec, g, i, stereo)
 			*devs = append(*devs, sdevs...)
 			for _, tr := range tracks {
@@ -275,6 +276,7 @@ func extractVR5(img cdSource, dec Decoder, devs *[]Deviation, stereo bool) (iter
 				}
 			}
 		}
+		report(Progress{Phase: ProgressDone})
 	}, nil
 }
 

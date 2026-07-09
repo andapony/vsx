@@ -55,16 +55,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	result, err := core.Extract(fs.Arg(0), core.Options{As: *as, Stereo: *stereo})
+	// A live progress line is drawn only for an interactive user, and never
+	// alongside -v (whose per-track lines are the progress) or -q. When off, the
+	// status line degrades to plain writes, so piped/CI output is unchanged.
+	status := newStatusLine(stderr, isTTY(stderr) && !*quiet && !*verbose)
+	opts := core.Options{As: *as, Stereo: *stereo, Progress: status.progress}
+
+	result, err := core.Extract(fs.Arg(0), opts)
 	if err != nil {
+		status.finish()
 		fmt.Fprintf(stderr, "vsx: %v\n", err)
 		return exitError
 	}
 
 	if *strict {
-		return runStrict(result, *outDir, *quiet, stdout, stderr)
+		return runStrict(result, *outDir, *quiet, stdout, stderr, status)
 	}
-	return runBestEffort(result, *outDir, *verbose, *quiet, stdout, stderr)
+	return runBestEffort(result, *outDir, *verbose, *quiet, stdout, stderr, status)
 }
 
 // runBestEffort extracts in the default posture (ADR-0002): every recoverable
@@ -81,19 +88,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 // yields no tracks (e.g. no event list, or all-empty v-tracks) contributes no
 // track to flush against, so its deviations surface at the next flush — after the
 // following song's first track, or, for the last song, at the post-loop flush.
-func runBestEffort(result core.Result, outDir string, verbose, quiet bool, stdout, stderr io.Writer) int {
+func runBestEffort(result core.Result, outDir string, verbose, quiet bool, stdout, stderr io.Writer, status *statusLine) int {
 	songs := map[int]bool{}
 	nTracks := 0
 
 	// flush reports every deviation not yet printed, advancing printed to the
 	// current total. Quiet mode still advances printed (suppressing only the
 	// output), so the post-loop summary count and the exit-code gate stay correct.
+	// Deviations go through status.logf so a live progress line is cleared first.
 	printed := 0
 	flush := func() {
 		devs := result.Deviations()
 		if !quiet {
 			for _, d := range devs[printed:] {
-				fmt.Fprintf(stderr, "deviation [%s] %s: %s\n", d.SpecRef, d.Location, d.Message)
+				status.logf("deviation [%s] %s: %s\n", d.SpecRef, d.Location, d.Message)
 			}
 		}
 		printed = len(devs)
@@ -101,27 +109,31 @@ func runBestEffort(result core.Result, outDir string, verbose, quiet bool, stdou
 
 	for tr, err := range result.Tracks() {
 		if err != nil {
+			status.finish()
 			fmt.Fprintf(stderr, "vsx: %v\n", err)
 			return exitError
 		}
 		path, err := writeTrack(outDir, tr)
 		if err != nil {
+			status.finish()
 			fmt.Fprintf(stderr, "vsx: %v\n", err)
 			return exitError
 		}
-		fmt.Fprintln(stdout, path)
 		songs[tr.Song.Number] = true
 		nTracks++
+		status.trackWritten()
+		status.emit(stdout, path)
 		if !quiet {
-			reportPair(stderr, tr)
+			reportPair(status, tr)
 		}
 		if verbose && !quiet {
-			fmt.Fprintf(stderr, "extracted %s (%d samples @ %d Hz)\n", path, len(tr.PCM.Samples), tr.Take.SampleRate)
+			status.logf("extracted %s (%d samples @ %d Hz)\n", path, len(tr.PCM.Samples), tr.Take.SampleRate)
 		}
 		flush()
 	}
 
 	flush() // trailing deviations: a no-track last song, or a Source with no audio.
+	status.finish()
 	if !quiet {
 		fmt.Fprintf(stderr, "vsx: extracted %d v-track(s) across %d song(s); %d deviation(s)\n",
 			nTracks, len(songs), printed)
@@ -145,25 +157,27 @@ func runBestEffort(result core.Result, outDir string, verbose, quiet bool, stdou
 // "no partial output" guarantee requires holding a clean run's PCM until the end.
 // That is acceptable here because strict is a validation gate, not the bulk
 // recovery path (best-effort streams and stays bounded).
-func runStrict(result core.Result, outDir string, quiet bool, stdout, stderr io.Writer) int {
+func runStrict(result core.Result, outDir string, quiet bool, stdout, stderr io.Writer, status *statusLine) int {
 	var buffered []core.TrackResult
 	for tr, err := range result.Tracks() {
 		if err != nil {
+			status.finish()
 			fmt.Fprintf(stderr, "vsx: %v\n", err)
 			return exitError
 		}
 		// A song's deviations are recorded before its tracks are yielded, so a
 		// deviation is visible here before this song's audio would be buffered.
 		if devs := result.Deviations(); len(devs) > 0 {
-			return strictAbort(devs, quiet, stderr)
+			return strictAbort(devs, quiet, status, stderr)
 		}
 		buffered = append(buffered, tr)
 	}
 	// Catch deviations from a song that yielded no tracks (e.g. a missing event
 	// list) or from enumeration on a Source with no audio at all.
 	if devs := result.Deviations(); len(devs) > 0 {
-		return strictAbort(devs, quiet, stderr)
+		return strictAbort(devs, quiet, status, stderr)
 	}
+	status.finish()
 
 	for _, tr := range buffered {
 		path, err := writeTrack(outDir, tr)
@@ -173,7 +187,7 @@ func runStrict(result core.Result, outDir string, quiet bool, stdout, stderr io.
 		}
 		fmt.Fprintln(stdout, path)
 		if !quiet {
-			reportPair(stderr, tr)
+			reportPair(status, tr)
 		}
 	}
 	if !quiet {
@@ -184,7 +198,8 @@ func runStrict(result core.Result, outDir string, quiet bool, stdout, stderr io.
 
 // strictAbort reports the first deviation and returns the strict-failure exit
 // code, having written no output.
-func strictAbort(devs []core.Deviation, quiet bool, stderr io.Writer) int {
+func strictAbort(devs []core.Deviation, quiet bool, status *statusLine, stderr io.Writer) int {
+	status.finish()
 	if !quiet {
 		d := devs[0]
 		fmt.Fprintf(stderr, "deviation [%s] %s: %s\n", d.SpecRef, d.Location, d.Message)
@@ -243,12 +258,13 @@ func trackLabel(tr core.TrackResult) string {
 
 // reportPair notes each formed §8.4 stereo pair on stderr so a false positive is
 // visible (issue #8); it is a no-op for a mono result. The report is independent
-// of -v because a pairing decision always warrants a look.
-func reportPair(stderr io.Writer, tr core.TrackResult) {
+// of -v because a pairing decision always warrants a look. It goes through
+// status.logf so a live progress line is cleared around it.
+func reportPair(status *statusLine, tr core.TrackResult) {
 	if tr.Right == nil {
 		return
 	}
-	fmt.Fprintf(stderr, "vsx: stereo pair: song %d tracks %d+%d (§8.4)\n",
+	status.logf("vsx: stereo pair: song %d tracks %d+%d (§8.4)\n",
 		tr.Song.Number, tr.Track, tr.PairTrack)
 }
 

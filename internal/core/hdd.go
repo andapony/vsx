@@ -20,13 +20,14 @@ import (
 // only steps that differ from CD; event-list parsing and timeline replay are the
 // shared §6/§8 kernels, since the HDD EVENTLST formats (§4.5/§4.6) are
 // byte-identical to their CD counterparts.
-func extractHDD(vol *hdd.Volume, dec Decoder, devs *[]Deviation, stereo bool) (iter.Seq2[TrackResult, error], error) {
+func extractHDD(vol *hdd.Volume, dec Decoder, devs *[]Deviation, stereo bool, report func(Progress)) (iter.Seq2[TrackResult, error], error) {
 	songs, err := vol.Songs()
 	if err != nil {
 		return nil, fmt.Errorf("core: enumerating HDD songs: %w", err)
 	}
 	return func(yield func(TrackResult, error) bool) {
-		for _, s := range songs {
+		for i, s := range songs {
+			report(Progress{Phase: ProgressExtracting, Song: i + 1, TotalSongs: len(songs), SongName: s.Name})
 			tracks, sdevs := extractHDDSong(dec, s, stereo)
 			*devs = append(*devs, sdevs...)
 			for _, tr := range tracks {
@@ -35,6 +36,7 @@ func extractHDD(vol *hdd.Volume, dec Decoder, devs *[]Deviation, stereo bool) (i
 				}
 			}
 		}
+		report(Progress{Phase: ProgressDone})
 	}, nil
 }
 
