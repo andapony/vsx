@@ -3,7 +3,6 @@ package core
 import (
 	"encoding/binary"
 	"fmt"
-	"iter"
 	"strings"
 )
 
@@ -37,80 +36,15 @@ var vr5IdentityFields = [][2]int{
 	{vr5OffSize, vr5OffSize + 4},
 }
 
-// walkVR5 enumerates a VS-1880 CD archive's files by the §5.4 chain walk,
-// validating every landed-on block with the §5.5 checks and skipping the header
-// copies and song-boundary blocks. VR5 has no song-boundary marker flag, so a
-// boundary block is caught by the magic check (case 3) and the +0x8000 check.
-// The walk ends at the §10 filler run; a dump lacking it is reported as a
-// truncated rip and walked to end-of-data.
-func walkVR5(img cdSource) ([]fileEntry, []Deviation, error) {
-	var devs []Deviation
-	end, ok := img.FillerStart()
-	if !ok {
-		devs = append(devs, Deviation{
-			Location: "disc",
-			SpecRef:  "§10",
-			Severity: SeverityWarning,
-			Message:  "no trailing TDI filler run; dump is likely a truncated/incomplete rip",
-		})
-		end = img.UserDataLen()
+// vr5BlockCount derives how many data blocks a VS-1880 file occupies from its
+// size: VR5 stores no block count, so it is ceil(size/0x8000), floored at one so
+// even a zero-length file advances the §5.4 chain by a whole block.
+func vr5BlockCount(_ []byte, fe fileEntry) int64 {
+	blocks := (fe.size + blockSize - 1) / blockSize
+	if blocks == 0 {
+		blocks = 1
 	}
-
-	var files []fileEntry
-	udoff := int64(firstFileHeader)
-	for udoff+blockSize <= end {
-		hdr, err := img.ReadUserData(udoff, vr5HeaderSpan)
-		if err != nil {
-			return files, devs, fmt.Errorf("core: reading header block at %#x: %w", udoff, err)
-		}
-		if !validVR5FileHeader(img, hdr, udoff, end) {
-			// A header copy or song-boundary block (§5.5): skip one slot and
-			// re-test, exactly as the §5.4 chain walk prescribes.
-			udoff += blockSize
-			continue
-		}
-		fe := parseVR5Header(hdr, udoff)
-		files = append(files, fe)
-		devs = append(devs, verifyJunction(img, hdr, fe.dataOff, fe.size, vr5HeaderSpan,
-			vr5IdentityFields, "file "+strings.TrimRight(fe.filename, " "))...)
-		// VR5 stores no block count; derive it from the file size (§5.4:
-		// next block = current + (1 + ceil(size/0x8000)) × 0x8000).
-		blocks := (fe.size + blockSize - 1) / blockSize
-		if blocks == 0 {
-			blocks = 1
-		}
-		udoff += (1 + blocks) * blockSize
-	}
-	return files, devs, nil
-}
-
-// validVR5FileHeader applies the §5.5 acceptance rules for a VS-1880 block: the
-// signature is present, the filename is plausible, the `60 BF 51 28` magic is at
-// +0x245C, and the block at +0x8000 is file data (not another archive signature,
-// and before the disc's data end). The index-0 block-0 check does not apply to a
-// forward chain walk that starts at the first file header.
-func validVR5FileHeader(img cdSource, hdr []byte, udoff, end int64) bool {
-	if string(hdr[:32]) != sigVR5 { // check 1
-		return false
-	}
-	if !plausibleName(hdr[vr5OffFilename : vr5OffFilename+11]) { // check 2
-		return false
-	}
-	if string(hdr[vr5OffMagic:vr5OffMagic+4]) != string(vr5Magic) { // check 3
-		return false
-	}
-	// check 6: a real header is followed by its file data, which never begins
-	// with the archive signature, and always lies before the filler start. This
-	// is the check that rejects every VR5 song-boundary block (§5.5 case 3).
-	dataOff := udoff + blockSize
-	if dataOff >= end {
-		return false
-	}
-	next, err := img.ReadUserData(dataOff, 32)
-	if err != nil || string(next) == sigVR5 {
-		return false
-	}
-	return true
+	return blocks
 }
 
 // parseVR5Header reads the §5.4 VS-1880 fields of a validated file header block.
@@ -219,6 +153,35 @@ const vr5Origin = 0
 // V-track table (§6.1), replayed at origin 0 (§3), carrying user track names.
 type vr5 struct{}
 
+// layout supplies the VS-1880 CD archive layout (§5.4/§5.5) the shared chain walk
+// runs on: a header validated by the `60 BF 51 28` magic at +0x245C (check 3,
+// which also rejects VR5's markerless song-boundary blocks), a block count
+// derived from the file size, and songs grouped by the header song name with the
+// catalog number resolved from each song's SONG file.
+func (vr5) layout() cdLayout {
+	return cdLayout{
+		machineName:    "VR5",
+		sig:            sigVR5,
+		nameOff:        vr5OffFilename,
+		headerSpan:     vr5HeaderSpan,
+		identityFields: vr5IdentityFields,
+		eventListRef:   "§6.1",
+		accept: func(hdr []byte) bool {
+			// check 3: the constant magic marks a genuine VR5 file header; a
+			// boundary block's stale per-file area fails it.
+			return string(hdr[vr5OffMagic:vr5OffMagic+4]) == string(vr5Magic)
+		},
+		parse:  parseVR5Header,
+		blocks: vr5BlockCount,
+		group:  groupVR5Songs,
+		songNumber: func(img cdSource, g songGroup, index int) (int, []Deviation) {
+			// VR5 headers carry no source SONG number; it is read from the
+			// song's SONG file (§4.4), falling back to walk order.
+			return vr5SongNumber(img, g.files, index)
+		},
+	}
+}
+
 // parseTimeline reduces a VS-1880 V-track table (§6.1) to a machine-neutral
 // songTimeline: each positional entry maps to a v-track group at its
 // table-derived track and v-track, with its name normalized so only a
@@ -259,39 +222,6 @@ func userTrackName(name string) string {
 	return name
 }
 
-// extractVR5 enumerates a VS-1880 CD archive and returns a lazy iterator over
-// its per-v-track results, appending enumeration deviations to devs immediately
-// and replay deviations as each song is consumed. Files are grouped into songs
-// by header song name (§5.4), one song processed at a time so a large Source is
-// never fully materialized.
-func extractVR5(img cdSource, ctx extractCtx) (iter.Seq2[TrackResult, error], error) {
-	files, wdevs, err := walkVR5(img)
-	if err != nil {
-		return nil, err
-	}
-	*ctx.devs = append(*ctx.devs, wdevs...)
-	groups := groupVR5Songs(files)
-
-	return func(yield func(TrackResult, error) bool) {
-		for i, g := range groups {
-			number, ndevs := vr5SongNumber(img, g.files, i)
-			key := cdSongKey(number)
-			if !ctx.selected(key) {
-				continue
-			}
-			ctx.report(Progress{Phase: ProgressExtracting, Song: i + 1, TotalSongs: len(groups), SongName: g.name})
-			tracks, sdevs := extractVR5Song(g, number, ndevs, key, ctx.dec, img, ctx.stereo)
-			*ctx.devs = append(*ctx.devs, sdevs...)
-			for _, tr := range tracks {
-				if !yield(tr, nil) {
-					return
-				}
-			}
-		}
-		ctx.report(Progress{Phase: ProgressDone})
-	}, nil
-}
-
 // groupVR5Songs partitions the enumerated files into songs by header song name
 // (§5.4: VR5 associates a file to a song by its 12-byte name), preserving
 // first-seen (walk) order for deterministic output.
@@ -308,44 +238,6 @@ func groupVR5Songs(files []fileEntry) []songGroup {
 		groups[gi].files = append(groups[gi].files, f)
 	}
 	return groups
-}
-
-// extractVR5Song replays one song's V-track table against its takes into
-// per-v-track results. number, numDevs, and key are resolved by the caller
-// (extractVR5) from the song's SONG file (§4.4) before any take is read, so
-// Options.Songs filtering happens ahead of this call; takes are resolved by
-// FileID, which on VR5 CD is the take's archive filename number (§5.7).
-func extractVR5Song(g songGroup, number int, numDevs []Deviation, key SongKey, dec Decoder, img cdSource, stereo bool) ([]TrackResult, []Deviation) {
-	devs := numDevs
-	loc := fmt.Sprintf("song %d", number)
-
-	elst, ok := findEventList(g.files)
-	if !ok {
-		return nil, append(devs, Deviation{Location: loc, SpecRef: "§5.4", Severity: SeverityError,
-			Message: "no EVENTLST file found for song; nothing to extract"})
-	}
-	data, err := img.ReadUserData(elst.dataOff, int(elst.size))
-	if err != nil {
-		return nil, append(devs, Deviation{Location: loc, SpecRef: "§6.1", Severity: SeverityError,
-			Message: fmt.Sprintf("reading event list: %v", err)})
-	}
-	st, edevs := vr5{}.parseTimeline(data)
-	devs = append(devs, edevs...)
-
-	sampleRate, rateDev := rateFromByte(elst.rateByte, loc)
-	if rateDev != nil {
-		devs = append(devs, *rateDev)
-	}
-	format := Format(elst.formatCode)
-
-	refs, _ := gatherRefs(st) // CD has no §8.3 cluster-count check; counts unused
-	takes, takeDevs := decodeTakes(img, dec, g.files, refs, format, loc)
-	devs = append(devs, takeDevs...)
-
-	tracks, tlDevs := buildTracks(st, takes, SongRef{Key: key, Number: number, Name: g.name},
-		audioSpec{sampleRate: sampleRate, format: format, clusterSize: blockSize}, stereo)
-	devs = append(devs, tlDevs...)
-	return tracks, devs
 }
 
 // vr5SongNumber resolves a song's catalog number from its `SONG    VR5` file

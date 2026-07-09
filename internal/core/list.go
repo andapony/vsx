@@ -55,16 +55,11 @@ func List(sourcePath string, opts Options) ([]SongInfo, []Deviation, error) {
 	if h.cooked {
 		devs = append(devs, cookedRipDeviation())
 	}
-	var songs []SongInfo
-	var sdevs []Deviation
-	switch h.machine {
-	case machineVR9:
-		songs, sdevs = listVR9(h.img)
-	case machineVR5:
-		songs, sdevs = listVR5(h.img)
-	default:
+	mf := formatFor(h.machine)
+	if mf == nil {
 		return nil, nil, fmt.Errorf("core: source identified but not yet supported by this build; machine=%v", h.machine)
 	}
+	songs, sdevs := listCD(h.img, mf)
 	devs = append(devs, sdevs...)
 	return songs, devs, nil
 }
@@ -95,16 +90,11 @@ func listSet(paths []string, opts Options) ([]SongInfo, []Deviation, error) {
 	if set.cooked {
 		devs = append(devs, cookedRipDeviation())
 	}
-	var songs []SongInfo
-	var sdevs []Deviation
-	switch set.machine {
-	case machineVR9:
-		songs, sdevs = listVR9(set.reader)
-	case machineVR5:
-		songs, sdevs = listVR5(set.reader)
-	default:
+	mf := formatFor(set.machine)
+	if mf == nil {
 		return nil, nil, fmt.Errorf("core: backup set machine not supported by this build; machine=%v", set.machine)
 	}
+	songs, sdevs := listCD(set.reader, mf)
 	devs = append(devs, sdevs...)
 	return songs, devs, nil
 }
@@ -138,106 +128,6 @@ func summarizeVTracks(st songTimeline) (vtracks, frames int) {
 		}
 	}
 	return vtracks, frames
-}
-
-// listVR9 enumerates a VS-880EX CD archive's songs and summarises each from
-// its event list, reusing the same chain walk and grouping the extractor uses
-// but never resolving or decoding a take.
-func listVR9(img cdSource) ([]SongInfo, []Deviation) {
-	files, devs, err := walkVR9(img)
-	if err != nil {
-		devs = append(devs, Deviation{Location: "disc", SpecRef: "§5.4", Severity: SeverityError,
-			Message: fmt.Sprintf("walking archive: %v", err)})
-		return nil, devs
-	}
-	var songs []SongInfo
-	for _, g := range groupSongs(files) {
-		key := cdSongKey(int(g.number))
-		info, sdevs := summarizeVR9Song(img, g, key)
-		devs = append(devs, sdevs...)
-		songs = append(songs, info)
-	}
-	return songs, devs
-}
-
-// summarizeVR9Song reads and parses one VS-880EX song's event list (exactly as
-// extractSong does up to the point takes would be resolved) and reduces it to
-// a catalog entry.
-func summarizeVR9Song(img cdSource, g songGroup, key SongKey) (SongInfo, []Deviation) {
-	loc := fmt.Sprintf("song %d", g.number)
-	base := SongInfo{Key: key, StoredNumber: int(g.number), Name: g.name, Machine: "VR9"}
-
-	elst, ok := findEventList(g.files)
-	if !ok {
-		return base, []Deviation{{Location: loc, SpecRef: "§5.4", Severity: SeverityError,
-			Message: "no EVENTLST file found for song; nothing to extract"}}
-	}
-	data, err := img.ReadUserData(elst.dataOff, int(elst.size))
-	if err != nil {
-		return base, []Deviation{{Location: loc, SpecRef: "§6.2", Severity: SeverityError,
-			Message: fmt.Sprintf("reading event list: %v", err)}}
-	}
-	st, devs := vr9{}.parseTimeline(data)
-
-	sampleRate, rateDev := rateFromByte(elst.rateByte, loc)
-	if rateDev != nil {
-		devs = append(devs, *rateDev)
-	}
-
-	base.VTracks, base.Frames = summarizeVTracks(st)
-	base.SampleRate = sampleRate
-	return base, devs
-}
-
-// listVR5 enumerates a VS-1880 CD archive's songs and summarises each from its
-// V-track table, reusing the same chain walk and grouping the extractor uses
-// but never resolving or decoding a take.
-func listVR5(img cdSource) ([]SongInfo, []Deviation) {
-	files, devs, err := walkVR5(img)
-	if err != nil {
-		devs = append(devs, Deviation{Location: "disc", SpecRef: "§5.4", Severity: SeverityError,
-			Message: fmt.Sprintf("walking archive: %v", err)})
-		return nil, devs
-	}
-	var songs []SongInfo
-	for i, g := range groupVR5Songs(files) {
-		number, ndevs := vr5SongNumber(img, g.files, i)
-		devs = append(devs, ndevs...)
-		key := cdSongKey(number)
-		info, sdevs := summarizeVR5Song(img, g, number, key)
-		devs = append(devs, sdevs...)
-		songs = append(songs, info)
-	}
-	return songs, devs
-}
-
-// summarizeVR5Song reads and parses one VS-1880 song's V-track table (exactly
-// as extractVR5Song does up to the point takes would be resolved) and reduces
-// it to a catalog entry.
-func summarizeVR5Song(img cdSource, g songGroup, number int, key SongKey) (SongInfo, []Deviation) {
-	loc := fmt.Sprintf("song %d", number)
-	base := SongInfo{Key: key, StoredNumber: number, Name: g.name, Machine: "VR5"}
-
-	elst, ok := findEventList(g.files)
-	if !ok {
-		return base, []Deviation{{Location: loc, SpecRef: "§5.4", Severity: SeverityError,
-			Message: "no EVENTLST file found for song; nothing to extract"}}
-	}
-	data, err := img.ReadUserData(elst.dataOff, int(elst.size))
-	if err != nil {
-		return base, []Deviation{{Location: loc, SpecRef: "§6.1", Severity: SeverityError,
-			Message: fmt.Sprintf("reading event list: %v", err)}}
-	}
-	st, devs := vr5{}.parseTimeline(data)
-
-	sampleRate, rateDev := rateFromByte(elst.rateByte, loc)
-	if rateDev != nil {
-		devs = append(devs, *rateDev)
-	}
-
-	base.VTracks, base.Frames = summarizeVTracks(st)
-	base.SampleRate = sampleRate
-	return base, devs
 }
 
 // listHDD enumerates a Roland VS live disk's songs and summarises each from

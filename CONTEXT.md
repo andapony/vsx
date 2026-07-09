@@ -37,11 +37,14 @@ rather than "what audio can I recover?"
 _Avoid_: validate mode, check mode.
 
 **Machine format**:
-The seam behind which one recorder family's event-list layout sits (ADR-0003):
-a `machineFormat` adapter (`vr5` for the VS-1880, `vr9` for the VS-880EX) whose
-one job is the *event-list → timeline reduction*. A third machine slots in as a
-third adapter, editing no dispatch. `formatFor` resolves a detected *machine*
-identity to its adapter.
+The seam behind which one recorder family's format sits (ADR-0003): a
+`machineFormat` adapter (`vr5` for the VS-1880, `vr9` for the VS-880EX) with two
+jobs — the *event-list → timeline reduction* (on every source) and, on the CD
+path, supplying the per-machine *CD layout* (`cdLayout`: header offsets,
+validity gate, block-count derivation, and song grouping) that parameterizes the
+one shared chain walk. A third machine slots in as a third adapter (plus its
+layout), editing no dispatch. `formatFor` resolves a detected *machine* identity
+to its adapter.
 _Avoid_: machine handler, codec (the codec is the RDAC *Decoder*, a separate
 seam — ADR-0004).
 

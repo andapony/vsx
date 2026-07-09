@@ -1,13 +1,19 @@
 package core
 
-// machineFormat is the seam behind which a recorder family's event-list format
-// sits (ADR-0003). Its one job is the event-list → timeline reduction: turning a
-// song's raw event-list bytes into a machine-neutral songTimeline that the
-// neutral build and summarize paths consume unchanged. VR5 (VS-1880) and VR9
-// (VS-880EX) are the two adapters; a third machine slots in here as a third
-// adapter without editing a switch.
+// machineFormat is the seam behind which a recorder family's format sits
+// (ADR-0003). It has two jobs. The first, on every source, is the event-list →
+// timeline reduction (parseTimeline): turning a song's raw event-list bytes into
+// a machine-neutral songTimeline that the neutral build and summarize paths
+// consume unchanged. The second, on the CD path only, is to supply the per-
+// machine CD archive layout (layout) that parameterizes the one shared chain
+// walk — the offsets, validity gate, block-count derivation, and song grouping
+// that the VS-1880 (VR5) and VS-880EX (VR9) archives differ in. VR5 and VR9 are
+// the two adapters; a third machine slots in as a third adapter (plus its
+// layout) and one more case in the formatFor resolver — no dispatch switch at
+// any call site, and no walk, changes.
 type machineFormat interface {
 	parseTimeline(data []byte) (songTimeline, []Deviation)
+	layout() cdLayout
 }
 
 // vtrackGroup is one v-track's placement on the timeline: its 1-based track and
