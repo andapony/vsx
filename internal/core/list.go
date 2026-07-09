@@ -23,9 +23,9 @@ type SongInfo struct {
 // Extract's identify/dispatch (sharing identifySource and openBackupSet so the
 // two paths cannot drift), then summarises each song straight from its event
 // list — the populated v-track count and timeline length are both derivable
-// from the events alone (mirroring buildVTrack's hasAudio/length, §8), so no
-// take is ever read or decoded and no Decoder is ever constructed. This makes
-// listing a multi-gigabyte HDD image a matter of seconds.
+// from the events alone (through the same vtrackStats rule buildVTrack uses,
+// §8), so no take is ever read or decoded and no Decoder is ever constructed.
+// This makes listing a multi-gigabyte HDD image a matter of seconds.
 func List(sourcePath string, opts Options) ([]SongInfo, []Deviation, error) {
 	info, err := os.Stat(sourcePath)
 	if err != nil {
@@ -100,29 +100,18 @@ func listSet(paths []string, opts Options) ([]SongInfo, []Deviation, error) {
 
 // summarizeVTracks computes a song's populated v-track count and overall
 // timeline length in frames from its parsed songTimeline — the same neutral
-// timeline the extractor's buildTracks consumes, so List and Extract agree by
-// construction. It mirrors buildVTrack's hasAudio/length computation (§8) — a
-// v-track is populated iff it has at least one take-bearing event (fileID != 0),
-// and its length is the maximum origin-relative end frame across every event in
-// the group (audio or erase) — but reports frames rather than samples (the
-// caller renders a duration as frames*samplesPerFrame/sampleRate) and never
-// touches a take's audio, so no Decoder is needed to answer either question.
+// timeline the extractor's buildTracks consumes, and through the same vtrackStats
+// rule buildVTrack applies, so List and Extract agree by construction rather than
+// by two loops kept in sync. It reports frames rather than samples (the caller
+// renders a duration as frames*samplesPerFrame/sampleRate) and never touches a
+// take's audio, so no Decoder is needed to answer either question.
 func summarizeVTracks(st songTimeline) (vtracks, frames int) {
 	for _, g := range st.groups {
-		hasAudio := false
-		length := 0
-		for _, e := range g.events {
-			if e.fileID != 0 {
-				hasAudio = true
-			}
-			if end := int(e.end) - st.origin; end > length {
-				length = end
-			}
-		}
+		hasAudio, endFrame := vtrackStats(g, st.origin)
 		if hasAudio {
 			vtracks++
-			if length > frames {
-				frames = length
+			if endFrame > frames {
+				frames = endFrame
 			}
 		}
 	}
