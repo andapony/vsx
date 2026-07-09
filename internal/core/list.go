@@ -3,7 +3,6 @@ package core
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/andapony/vsx/internal/hdd"
 )
@@ -76,7 +75,7 @@ func ListSet(paths []string, opts Options) ([]SongInfo, []Deviation, error) {
 // (§5.6), grouping them exactly as extractSet does, then summarises each song
 // over the stitched reader without decoding any take.
 func listSet(paths []string, opts Options) ([]SongInfo, []Deviation, error) {
-	if strings.EqualFold(strings.TrimSpace(opts.As), "hdd") {
+	if opts.As.kind == kindHDD {
 		return nil, nil, fmt.Errorf("core: --as=hdd is not valid for a multi-disc CD backup set (an HDD source is a single image)")
 	}
 

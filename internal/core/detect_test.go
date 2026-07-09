@@ -32,7 +32,7 @@ func vr9Header(sig []byte) []byte {
 // TestDetectVR9CD verifies the §5.2 detection claim: the VS-880EX signature at
 // user-data offset 0 identifies a CD source as machine VR9, with no override.
 func TestDetectVR9CD(t *testing.T) {
-	p, err := detect(imageOf(t, vr9Header([]byte("VS-8EXECR02 Song Copy Archives  "))), "")
+	p, err := detect(imageOf(t, vr9Header([]byte("VS-8EXECR02 Song Copy Archives  "))), machineUnknown)
 	require.NoError(t, err)
 	assert.Equal(t, kindCD, p.kind)
 	assert.Equal(t, machineVR9, p.machine)
@@ -42,7 +42,7 @@ func TestDetectVR9CD(t *testing.T) {
 // the pipeline can report it as an unsupported machine rather than mis-reading
 // it as VR9).
 func TestDetectVR5CD(t *testing.T) {
-	p, err := detect(imageOf(t, vr9Header([]byte("VS1880EXR06 Song Copy Archives  "))), "")
+	p, err := detect(imageOf(t, vr9Header([]byte("VS1880EXR06 Song Copy Archives  "))), machineUnknown)
 	require.NoError(t, err)
 	assert.Equal(t, machineVR5, p.machine)
 }
@@ -50,14 +50,14 @@ func TestDetectVR5CD(t *testing.T) {
 // TestDetectUnidentifiableErrors verifies that input carrying no known archive
 // signature and no override is a hard error, not a silent empty success.
 func TestDetectUnidentifiableErrors(t *testing.T) {
-	_, err := detect(imageOf(t, vr9Header([]byte("not a roland disc"))), "")
+	_, err := detect(imageOf(t, vr9Header([]byte("not a roland disc"))), machineUnknown)
 	assert.Error(t, err)
 }
 
 // TestDetectOverrideForcesVR9 verifies the --as override: unrecognized bytes are
 // forced to VR9 CD when the user asserts it.
 func TestDetectOverrideForcesVR9(t *testing.T) {
-	p, err := detect(imageOf(t, vr9Header([]byte("garbage"))), "vr9")
+	p, err := detect(imageOf(t, vr9Header([]byte("garbage"))), machineVR9)
 	require.NoError(t, err)
 	assert.Equal(t, kindCD, p.kind)
 	assert.Equal(t, machineVR9, p.machine)

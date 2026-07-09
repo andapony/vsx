@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"iter"
 	"os"
-	"strings"
 
 	"github.com/andapony/vsx/internal/cd"
 	"github.com/andapony/vsx/internal/hdd"
@@ -25,12 +24,11 @@ import (
 // all output the moment any deviation appears — is an output policy the command
 // layer applies over a best-effort Result, not an extraction mode.
 type Options struct {
-	// As forces the Source type when byte-level detection is ambiguous on
-	// damaged media; "" means autodetect. "hdd" forces the HDD live-disk path
-	// (§4); "cd" forces the CD archive path and autodetects the machine; "vr9"/
-	// "vr5" force the CD path as that machine when no archive signature is found
-	// (§5.2). It is the --as override.
-	As string
+	// As forces the Source type and/or machine when byte-level detection is
+	// ambiguous on damaged media; its zero value autodetects. It is the typed
+	// --as override — build it with ParseAs, which rejects unrecognized values at
+	// the flag boundary.
+	As SourceOverride
 
 	// Stereo enables the conservative §8.4 stereo-pair heuristic: two adjacent
 	// physical tracks that each have exactly one populated v-track with matching
@@ -235,11 +233,11 @@ func identifySource(sourcePath string, info os.FileInfo, opts Options) (sourceHa
 	// HDD path (§4): a Roland live disk is identified structurally — its MBR and
 	// a partition BPB's "Roland  " OEM ID — before the CD signature check, since
 	// an HDD image carries no CD archive signature at user-data offset 0.
-	// --as=hdd forces it; any other override forces the CD path; "" autodetects,
-	// trying HDD first and falling through to CD when the image is not Roland.
-	asLower := strings.ToLower(strings.TrimSpace(opts.As))
-	forceHDD := asLower == "hdd"
-	forceCD := asLower != "" && !forceHDD
+	// --as=hdd forces it; any CD override forces the CD path; the zero override
+	// autodetects, trying HDD first and falling through to CD when the image is
+	// not Roland.
+	forceHDD := opts.As.kind == kindHDD
+	forceCD := opts.As.kind == kindCD
 	if forceHDD || !forceCD {
 		vol, herr := hdd.Open(f, info.Size())
 		if herr == nil {
@@ -258,13 +256,9 @@ func identifySource(sourcePath string, info os.FileInfo, opts Options) (sourceHa
 		return sourceHandle{}, fmt.Errorf("core: %w", err)
 	}
 
-	// "cd" forces the CD path but leaves the machine to signature autodetection;
-	// "vr9"/"vr5" additionally force the machine when no signature is present.
-	cdOverride := opts.As
-	if asLower == "cd" {
-		cdOverride = ""
-	}
-	p, err := detect(img, cdOverride)
+	// The machine override ("vr9"/"vr5") forces the machine when no signature is
+	// present; kindCD alone ("cd") leaves the machine to signature autodetection.
+	p, err := detect(img, opts.As.machine)
 	if err != nil {
 		f.Close()
 		return sourceHandle{}, err
@@ -345,7 +339,7 @@ func ExtractSet(paths []string, opts Options) (Result, error) { return extractSe
 // ends. A CD backup set can only be a CD source, so --as=hdd is a usage error
 // here.
 func extractSet(paths []string, opts Options) (Result, error) {
-	if strings.EqualFold(strings.TrimSpace(opts.As), "hdd") {
+	if opts.As.kind == kindHDD {
 		return Result{}, fmt.Errorf("core: --as=hdd is not valid for a multi-disc CD backup set (an HDD source is a single image)")
 	}
 	report := progressFn(opts.Progress)
