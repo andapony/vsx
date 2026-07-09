@@ -317,17 +317,13 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 		*devs = append(*devs, cookedRipDeviation())
 	}
 
-	ctx := extractCtx{dec: NewDecoder(), devs: devs, stereo: opts.Stereo, report: report, songs: opts.Songs}
-	var inner iter.Seq2[TrackResult, error]
-	switch h.machine {
-	case machineVR9:
-		inner, err = extractVR9(h.img, ctx)
-	case machineVR5:
-		inner, err = extractVR5(h.img, ctx)
-	default:
+	mf := formatFor(h.machine)
+	if mf == nil {
 		h.f.Close()
 		return Result{}, fmt.Errorf("core: source identified but not yet supported by this build; machine=%v", h.machine)
 	}
+	ctx := extractCtx{dec: NewDecoder(), devs: devs, stereo: opts.Stereo, report: report, songs: opts.Songs}
+	inner, err := extractCD(h.img, mf, ctx)
 	if err != nil {
 		h.f.Close()
 		return Result{}, err
@@ -365,17 +361,13 @@ func extractSet(paths []string, opts Options) (Result, error) {
 		*devs = append(*devs, cookedRipDeviation())
 	}
 
-	ctx := extractCtx{dec: NewDecoder(), devs: devs, stereo: opts.Stereo, report: report, songs: opts.Songs}
-	var inner iter.Seq2[TrackResult, error]
-	switch set.machine {
-	case machineVR9:
-		inner, err = extractVR9(set.reader, ctx)
-	case machineVR5:
-		inner, err = extractVR5(set.reader, ctx)
-	default:
+	mf := formatFor(set.machine)
+	if mf == nil {
 		closeAll(set.files)
 		return Result{}, fmt.Errorf("core: backup set machine not supported by this build; machine=%v", set.machine)
 	}
+	ctx := extractCtx{dec: NewDecoder(), devs: devs, stereo: opts.Stereo, report: report, songs: opts.Songs}
+	inner, err := extractCD(set.reader, mf, ctx)
 	if err != nil {
 		closeAll(set.files)
 		return Result{}, err

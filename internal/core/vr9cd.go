@@ -3,7 +3,6 @@ package core
 import (
 	"encoding/binary"
 	"fmt"
-	"iter"
 	"strings"
 )
 
@@ -49,76 +48,6 @@ type fileEntry struct {
 	formatCode byte
 	dataOff    int64 // user-data offset where file data begins (header + 0x8000)
 	size       int64
-}
-
-// walkVR9 enumerates a VS-880EX CD archive's files by the §5.4 chain walk,
-// validating every landed-on block with the §5.5 checks and skipping the header
-// copies and song-boundary blocks that are not file headers. The walk ends at
-// the §10 filler run; a dump lacking it is reported as a truncated rip
-// (deviation) and walked to end-of-data.
-func walkVR9(img cdSource) ([]fileEntry, []Deviation, error) {
-	var devs []Deviation
-	end, ok := img.FillerStart()
-	if !ok {
-		devs = append(devs, Deviation{
-			Location: "disc",
-			SpecRef:  "§10",
-			Severity: SeverityWarning,
-			Message:  "no trailing TDI filler run; dump is likely a truncated/incomplete rip",
-		})
-		end = img.UserDataLen()
-	}
-
-	var files []fileEntry
-	udoff := int64(firstFileHeader)
-	for udoff+blockSize <= end {
-		hdr, err := img.ReadUserData(udoff, headerSpan)
-		if err != nil {
-			return files, devs, fmt.Errorf("core: reading header block at %#x: %w", udoff, err)
-		}
-		if !validFileHeader(img, hdr, udoff, end) {
-			// A header copy or song-boundary block (§5.5): skip one slot and
-			// re-test, exactly as the §5.4 chain walk prescribes.
-			udoff += blockSize
-			continue
-		}
-		fe := parseHeader(hdr, udoff)
-		files = append(files, fe)
-		devs = append(devs, verifyJunction(img, hdr, fe.dataOff, fe.size, headerSpan,
-			vr9IdentityFields, "file "+strings.TrimRight(fe.filename, " "))...)
-		blockCount := int64(binary.BigEndian.Uint16(hdr[offBlockCount:]))
-		udoff += (1 + blockCount) * blockSize
-	}
-	return files, devs, nil
-}
-
-// validFileHeader applies the §5.5 acceptance rules for a VS-880EX block: the
-// signature is present, the filename is plausible, the marker flag is clear,
-// and the block at +0x8000 is file data (not another archive signature, and not
-// at/past the disc's data end). The VR5-only magic and the index-0 block-0
-// checks do not apply to a forward chain walk that starts at the first file
-// header.
-func validFileHeader(img cdSource, hdr []byte, udoff, end int64) bool {
-	if string(hdr[:32]) != sigVR9 { // check 1
-		return false
-	}
-	if !plausibleName(hdr[offFilename : offFilename+11]) { // check 2
-		return false
-	}
-	if binary.BigEndian.Uint16(hdr[offMarker:]) != 0 { // check 4: song-boundary marker
-		return false
-	}
-	// check 6: a real header is followed by its file data, which never begins
-	// with the archive signature, and always lies before the filler start.
-	dataOff := udoff + blockSize
-	if dataOff >= end {
-		return false
-	}
-	next, err := img.ReadUserData(dataOff, 32)
-	if err != nil || string(next) == sigVR9 {
-		return false
-	}
-	return true
 }
 
 // plausibleName reports whether an 11-byte filename field is a valid VS name
@@ -187,6 +116,36 @@ type vr9Event struct {
 // vr9 is the VS-880EX event-list adapter (ADR-0003): a flat event log whose
 // records each carry a v-track code, replayed at origin 12 (§3).
 type vr9 struct{}
+
+// layout supplies the VS-880EX CD archive layout (§5.4/§5.5) the shared chain
+// walk runs on: a header validated by its clear song-boundary marker flag
+// (check 4), a stored block count driving the chain step, and songs grouped by
+// the source SONG number the header carries.
+func (vr9) layout() cdLayout {
+	return cdLayout{
+		machineName:    "VR9",
+		sig:            sigVR9,
+		nameOff:        offFilename,
+		headerSpan:     headerSpan,
+		identityFields: vr9IdentityFields,
+		eventListRef:   "§6.2",
+		accept: func(hdr []byte) bool {
+			// check 4: a real header's marker flag is clear; a song-boundary
+			// block sets it.
+			return binary.BigEndian.Uint16(hdr[offMarker:]) == 0
+		},
+		parse: parseHeader,
+		blocks: func(hdr []byte, _ fileEntry) int64 {
+			// VR9 stores the data-block count in the header (§5.4).
+			return int64(binary.BigEndian.Uint16(hdr[offBlockCount:]))
+		},
+		group: groupSongs,
+		songNumber: func(_ cdSource, g songGroup, _ int) (int, []Deviation) {
+			// VR9 files carry their source SONG number in the header (§5.4).
+			return int(g.number), nil
+		},
+	}
+}
 
 // parseTimeline reduces a VS-880EX event log (§6.2/§8.2) to a machine-neutral
 // songTimeline: records group by v-track code in log order, each code mapping to
@@ -278,72 +237,6 @@ func groupSongs(files []fileEntry) []songGroup {
 		groups[gi].files = append(groups[gi].files, f)
 	}
 	return groups
-}
-
-// extractVR9 enumerates a VS-880EX CD archive and returns a lazy iterator over
-// its per-v-track results, appending deviations found during enumeration to
-// devs immediately and those found during replay as each song is consumed. The
-// iterator processes one song at a time so a large Source is never fully
-// materialized (bounded memory, per the foundation).
-func extractVR9(img cdSource, ctx extractCtx) (iter.Seq2[TrackResult, error], error) {
-	files, wdevs, err := walkVR9(img)
-	if err != nil {
-		return nil, err
-	}
-	*ctx.devs = append(*ctx.devs, wdevs...)
-	groups := groupSongs(files)
-
-	return func(yield func(TrackResult, error) bool) {
-		for i, g := range groups {
-			key := cdSongKey(int(g.number))
-			if !ctx.selected(key) {
-				continue
-			}
-			ctx.report(Progress{Phase: ProgressExtracting, Song: i + 1, TotalSongs: len(groups), SongName: g.name})
-			tracks, sdevs := extractSong(img, ctx.dec, g, key, ctx.stereo)
-			*ctx.devs = append(*ctx.devs, sdevs...)
-			for _, tr := range tracks {
-				if !yield(tr, nil) {
-					return
-				}
-			}
-		}
-		ctx.report(Progress{Phase: ProgressDone})
-	}, nil
-}
-
-// extractSong replays one song's event log against its takes into per-v-track
-// results. Takes are resolved by FileID (§5.7: VR9 CD FileIDs equal the HDD FAT
-// start clusters the event records carry) and decoded on demand. key is the
-// song's SongKey, computed by the caller from its catalog SONG number.
-func extractSong(img cdSource, dec Decoder, g songGroup, key SongKey, stereo bool) ([]TrackResult, []Deviation) {
-	loc := fmt.Sprintf("song %d", g.number)
-	elst, ok := findEventList(g.files)
-	if !ok {
-		return nil, []Deviation{{Location: loc, SpecRef: "§5.4", Severity: SeverityError,
-			Message: "no EVENTLST file found for song; nothing to extract"}}
-	}
-	data, err := img.ReadUserData(elst.dataOff, int(elst.size))
-	if err != nil {
-		return nil, []Deviation{{Location: loc, SpecRef: "§6.2", Severity: SeverityError,
-			Message: fmt.Sprintf("reading event list: %v", err)}}
-	}
-	st, devs := vr9{}.parseTimeline(data)
-
-	sampleRate, rateDev := rateFromByte(elst.rateByte, loc)
-	if rateDev != nil {
-		devs = append(devs, *rateDev)
-	}
-	format := Format(elst.formatCode)
-
-	refs, _ := gatherRefs(st) // CD has no §8.3 cluster-count check; counts unused
-	takes, takeDevs := decodeTakes(img, dec, g.files, refs, format, loc)
-	devs = append(devs, takeDevs...)
-
-	tracks, tlDevs := buildTracks(st, takes, SongRef{Key: key, Number: int(g.number), Name: g.name},
-		audioSpec{sampleRate: sampleRate, format: format, clusterSize: blockSize}, stereo)
-	devs = append(devs, tlDevs...)
-	return tracks, devs
 }
 
 // findEventList returns the song's EVENTLST file.
