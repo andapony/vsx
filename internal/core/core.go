@@ -38,6 +38,41 @@ type Options struct {
 	// two monos. Off by default; unpaired v-tracks always stay mono. It is the
 	// --stereo flag.
 	Stereo bool
+
+	// Progress, when non-nil, is called at coarse extraction milestones so a
+	// caller can render progress on a long Source. Core makes no progress calls
+	// when it is nil, and the callback must not block. Calls arrive on the
+	// goroutine driving the track iterator, in order.
+	Progress func(Progress)
+}
+
+// ProgressPhase is the coarse stage an extraction has reached.
+type ProgressPhase int
+
+const (
+	ProgressIdentifying ProgressPhase = iota // opening, detecting, and enumerating the Source
+	ProgressExtracting                       // decoding one song's takes and building its v-tracks
+	ProgressDone                             // every song has been processed
+)
+
+// Progress is a coarse extraction milestone (Options.Progress). During
+// ProgressExtracting, TotalSongs is the number of songs enumerated on the
+// Source, Song is the 1-based index now being processed, and SongName is its
+// name — enough to render "song i/N (name)". The other phases carry no counts.
+type Progress struct {
+	Phase      ProgressPhase
+	Song       int
+	TotalSongs int
+	SongName   string
+}
+
+// progressFn normalizes an optional Progress callback to a non-nil no-op, so
+// call sites never need a nil check.
+func progressFn(f func(Progress)) func(Progress) {
+	if f == nil {
+		return func(Progress) {}
+	}
+	return f
 }
 
 // Severity ranks how far a Deviation departs from the spec.
@@ -160,6 +195,8 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 	if info.IsDir() {
 		return extractSet(sourcePath, opts)
 	}
+	report := progressFn(opts.Progress)
+	report(Progress{Phase: ProgressIdentifying})
 
 	f, err := os.Open(sourcePath)
 	if err != nil {
@@ -178,7 +215,7 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 	if forceHDD || !forceCD {
 		vol, herr := hdd.Open(f, info.Size())
 		if herr == nil {
-			return newHDDResult(f, vol, devs, opts.Stereo)
+			return newHDDResult(f, vol, devs, opts.Stereo, report)
 		}
 		if forceHDD {
 			f.Close()
@@ -218,9 +255,9 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 	var inner iter.Seq2[TrackResult, error]
 	switch p.machine {
 	case machineVR9:
-		inner, err = extractVR9(img, NewDecoder(), devs, opts.Stereo)
+		inner, err = extractVR9(img, NewDecoder(), devs, opts.Stereo, report)
 	case machineVR5:
-		inner, err = extractVR5(img, NewDecoder(), devs, opts.Stereo)
+		inner, err = extractVR5(img, NewDecoder(), devs, opts.Stereo, report)
 	default:
 		f.Close()
 		return Result{}, fmt.Errorf("core: source identified but not yet supported by this build; machine=%v", p.machine)
@@ -243,6 +280,8 @@ func extractSet(dir string, opts Options) (Result, error) {
 	if strings.EqualFold(strings.TrimSpace(opts.As), "hdd") {
 		return Result{}, fmt.Errorf("core: --as=hdd but %q is a directory (an HDD source is a single image, not a directory)", dir)
 	}
+	report := progressFn(opts.Progress)
+	report(Progress{Phase: ProgressIdentifying})
 
 	set, err := openBackupSet(dir, opts)
 	if err != nil {
@@ -257,9 +296,9 @@ func extractSet(dir string, opts Options) (Result, error) {
 	var inner iter.Seq2[TrackResult, error]
 	switch set.machine {
 	case machineVR9:
-		inner, err = extractVR9(set.reader, NewDecoder(), devs, opts.Stereo)
+		inner, err = extractVR9(set.reader, NewDecoder(), devs, opts.Stereo, report)
 	case machineVR5:
-		inner, err = extractVR5(set.reader, NewDecoder(), devs, opts.Stereo)
+		inner, err = extractVR5(set.reader, NewDecoder(), devs, opts.Stereo, report)
 	default:
 		closeAll(set.files)
 		return Result{}, fmt.Errorf("core: backup set machine not supported by this build; machine=%v", set.machine)
@@ -274,8 +313,8 @@ func extractSet(dir string, opts Options) (Result, error) {
 // newHDDResult builds a streaming Result over a Roland live disk, keeping the
 // Source file open for the lifetime of the track iterator and closing it when
 // iteration ends — the same ownership contract as the CD path.
-func newHDDResult(f *os.File, vol *hdd.Volume, devs *[]Deviation, stereo bool) (Result, error) {
-	inner, err := extractHDD(vol, NewDecoder(), devs, stereo)
+func newHDDResult(f *os.File, vol *hdd.Volume, devs *[]Deviation, stereo bool, report func(Progress)) (Result, error) {
+	inner, err := extractHDD(vol, NewDecoder(), devs, stereo, report)
 	if err != nil {
 		f.Close()
 		return Result{}, err
