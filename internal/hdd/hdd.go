@@ -141,6 +141,8 @@ func openPartition(src io.ReaderAt, size int64, startLBA uint32) (*partition, bo
 type Song struct {
 	Name         string // 8.3 base, e.g. "SONG0001"
 	Ext          string // machine extension, "VR5" / "VR9"
+	Partition    int    // 1-based ordinal of the partition this song lives in
+	Index        int    // 0-based position of this song within its partition
 	part         *partition
 	firstCluster uint16
 }
@@ -151,19 +153,26 @@ func (s Song) ClusterSize() int { return s.part.clusterBytes }
 
 // Songs lists every song subdirectory across all partitions, in
 // partition-then-root-order. The FAT16 root directory is read unswapped (§4.2);
-// entries that are not machine-extension subdirectories are skipped.
+// entries that are not machine-extension subdirectories are skipped. Index is
+// stamped as the 0-based position within each partition (resetting per
+// partition): one FAT partition can hold two directories that share a
+// SONGxxxx base but differ in machine extension (e.g. SONG0000.VR9 and
+// SONG0000.VR5), so the base name alone is not a unique ordinal — the
+// enumeration position is, by construction.
 func (v *Volume) Songs() ([]Song, error) {
 	var out []Song
-	for _, p := range v.parts {
+	for pi, p := range v.parts {
 		root := make([]byte, p.rootEntCount*32)
 		if _, err := p.src.ReadAt(root, p.rootDirStartByte); err != nil {
 			return nil, fmt.Errorf("hdd: reading root directory: %w", err)
 		}
+		idx := 0
 		for _, e := range parseDir(root) {
 			if !e.isSubdir() || !isMachineExt(e.ext) {
 				continue
 			}
-			out = append(out, Song{Name: e.name, Ext: e.ext, part: p, firstCluster: e.firstCluster})
+			out = append(out, Song{Name: e.name, Ext: e.ext, Partition: pi + 1, Index: idx, part: p, firstCluster: e.firstCluster})
+			idx++
 		}
 	}
 	return out, nil

@@ -63,6 +63,28 @@ func TestOpenEnumeratesSongsAndReadsAFile(t *testing.T) {
 	assert.Equal(t, 1, clusters, "the take occupies one cluster")
 }
 
+// TestSongsHavePartitionOrdinal locks the invariant that each song is stamped
+// with the 1-based ordinal of the partition it was enumerated from (MBR-offset
+// order), so a later SongKey can combine it with the SONGxxxx folder ordinal to
+// stay unique across a multi-partition HDD.
+func TestSongsHavePartitionOrdinal(t *testing.T) {
+	// Two Roland partitions, each with one song directory (each becomes SONG0000).
+	onePart := func(name string) hddfix.Partition {
+		return hddfix.Partition{Songs: []hddfix.Song{{
+			Number: 1, Name: name, Ext: "VR5",
+			Takes:  []hddfix.Take{{NameCluster: 0x0100, Content: make([]byte, 16*4)}},
+			Events: []hddfix.Event{{Start: 0, End: 4, NameCluster: 0x0100, Track: 1, VTrack: 1}},
+		}}}
+	}
+	v := volumeOf(t, hddfix.Disk{Partitions: []hddfix.Partition{onePart("A"), onePart("B")}})
+	songs, err := v.Songs()
+	require.NoError(t, err)
+	require.Len(t, songs, 2)
+	// Partition ordinal is 1-based and distinguishes the two partitions.
+	assert.Equal(t, 1, songs[0].Partition)
+	assert.Equal(t, 2, songs[1].Partition)
+}
+
 // TestOpenReadsExtendedMBROffsets locks the §4.1 invariant that a Roland disk's
 // four extended-group partitions (offsets 382–430) are read, not just the four
 // standard entries. A five-partition disk fills all four standard slots and one

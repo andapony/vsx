@@ -42,6 +42,31 @@ Media-dependent tests read real images from the directory named by
 [ADR-0005](./docs/adr/0005-verification-strategy.md)); the corpus lives outside
 the repository. CI runs the media-independent suite.
 
+## Listing and extracting one song
+
+`--list` prints the source's song catalog and exits without extracting
+anything: a tab-separated data row per song on stdout, with a header line
+(`KEY  SONG#  MACHINE  V-TRACKS  DURATION  NAME`) and any enumeration
+deviations on stderr.
+
+```sh
+vsx --list image.hdd
+```
+
+`--song KEY` extracts just the given song instead of the whole source; repeat
+the flag or comma-separate keys to pull several:
+
+```sh
+vsx --song 2.7 image.hdd
+vsx --song 2.7 --song 3.1 image.hdd
+```
+
+On HDD sources the output folder is named `PP.OOO - name` (partition number,
+enumeration index within that partition — e.g. `07.017 - LBL 4_19`), because
+the VS device's own song number is not unique across a multi-partition disk.
+CD sources keep the existing `NN - name` folders, since the catalog number is
+already unique there.
+
 ## Layout
 
 | Path | What |
