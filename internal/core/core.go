@@ -181,12 +181,6 @@ type Result struct {
 	deviations *[]Deviation
 }
 
-// newResult builds a Result from a lazy track sequence and a fixed set of
-// deviations. Callers observe a Result only through Tracks and Deviations.
-func newResult(tracks iter.Seq2[TrackResult, error], deviations []Deviation) Result {
-	return Result{tracks: tracks, deviations: &deviations}
-}
-
 // Tracks returns a lazy iterator over the extracted per-v-track results. It is
 // always safe to range over, including on a zero-value Result.
 func (r Result) Tracks() iter.Seq2[TrackResult, error] {

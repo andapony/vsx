@@ -27,7 +27,7 @@ func TestResultTracksStreamsLazily(t *testing.T) {
 			}
 		}
 	}
-	r := newResult(seq, nil)
+	r := Result{tracks: seq}
 
 	seen := 0
 	for tr, err := range r.Tracks() {
@@ -59,7 +59,7 @@ func TestResultDeviations(t *testing.T) {
 	devs := []Deviation{
 		{Location: "song 3 / v-track 12", SpecRef: "§5.5", Severity: SeverityWarning, Message: "unknown field value"},
 	}
-	r := newResult(nil, devs)
+	r := Result{deviations: &devs}
 	assert.Equal(t, devs, r.Deviations())
 }
 
