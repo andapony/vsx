@@ -248,7 +248,7 @@ func readDiscHeader(path string) (machine, cd.ArchiveHeader, bool) {
 	if err != nil {
 		return machineUnknown, cd.ArchiveHeader{}, false
 	}
-	m := machineForSig(string(sig), "")
+	m := machineForSig(string(sig), machineUnknown)
 	if m == machineUnknown {
 		return machineUnknown, cd.ArchiveHeader{}, false
 	}

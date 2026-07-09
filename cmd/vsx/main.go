@@ -68,8 +68,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	override, err := core.ParseAs(*as)
+	if err != nil {
+		fmt.Fprintf(stderr, "vsx: %v\n", err)
+		return exitUsage
+	}
+
 	if *list {
-		catalog, devs, err := listSources(sources, core.Options{As: *as})
+		catalog, devs, err := listSources(sources, core.Options{As: override})
 		if err != nil {
 			fmt.Fprintf(stderr, "vsx: %v\n", err)
 			return exitError
@@ -81,7 +87,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(songs.keys) > 0 {
-		catalog, _, err := listSources(sources, core.Options{As: *as})
+		catalog, _, err := listSources(sources, core.Options{As: override})
 		if err != nil {
 			fmt.Fprintf(stderr, "vsx: %v\n", err)
 			return exitError
@@ -106,7 +112,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// alongside -v (whose per-track lines are the progress) or -q. When off, the
 	// status line degrades to plain writes, so piped/CI output is unchanged.
 	status := newStatusLine(stderr, isTTY(stderr) && !*quiet && !*verbose)
-	opts := core.Options{As: *as, Stereo: *stereo, Progress: status.progress, Songs: songs.keys}
+	opts := core.Options{As: override, Stereo: *stereo, Progress: status.progress, Songs: songs.keys}
 
 	result, err := extractSources(sources, opts)
 	if err != nil {

@@ -34,6 +34,39 @@ type profile struct {
 	machine machine
 }
 
+// SourceOverride is the typed --as override (Options.As): which respects of
+// byte-level autodetection the caller has forced. Its zero value autodetects
+// everything. It is opaque — built only by ParseAs, read only inside core — so
+// the invalid combinations a bare string allowed (an unknown machine name, a
+// "-cd" alias) cannot be constructed.
+type SourceOverride struct {
+	kind    sourceKind // kindHDD/kindCD force the Source type; kindUnknown autodetects
+	machine machine    // machineVR5/machineVR9 force the CD machine; machineUnknown autodetects
+}
+
+// ParseAs converts an --as override string into a typed SourceOverride, or
+// returns a usage error for an unrecognized value. "" autodetects everything;
+// "hdd" forces the HDD live-disk path (§4); "cd" forces the CD archive path and
+// autodetects the machine by signature; "vr9"/"vr5" force the CD path as that
+// machine when no archive signature is present (§5.2). It is the single place an
+// --as string becomes an override, so the accepted values live in one switch.
+func ParseAs(s string) (SourceOverride, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return SourceOverride{}, nil
+	case "hdd":
+		return SourceOverride{kind: kindHDD}, nil
+	case "cd":
+		return SourceOverride{kind: kindCD}, nil
+	case "vr9":
+		return SourceOverride{kind: kindCD, machine: machineVR9}, nil
+	case "vr5":
+		return SourceOverride{kind: kindCD, machine: machineVR5}, nil
+	default:
+		return SourceOverride{}, fmt.Errorf("core: unknown --as value %q (want hdd, cd, vr9, or vr5)", s)
+	}
+}
+
 // Archive signatures at CD user-data offset 0 (§1/§5.2), 32 bytes each.
 const (
 	sigVR9 = "VS-8EXECR02 Song Copy Archives  "
@@ -42,10 +75,10 @@ const (
 
 // detect identifies a Source from its bytes (§5.2). It reads the archive
 // signature at user-data offset 0; a match fixes the machine. When the bytes
-// are unrecognized, override ("vr9"/"vr5", the --as value) forces the profile;
-// with neither a signature nor an override, detection is a hard error — the
-// "genuinely unidentifiable input" case the issue calls out.
-func detect(img *cd.Image, override string) (profile, error) {
+// are unrecognized, override (machineVR9/machineVR5, from --as) forces the
+// machine; with neither a signature nor an override, detection is a hard error —
+// the "genuinely unidentifiable input" case the issue calls out.
+func detect(img *cd.Image, override machine) (profile, error) {
 	sig, err := img.ReadUserData(0, 32)
 	if err != nil {
 		return profile{}, fmt.Errorf("core: reading archive signature: %w", err)
@@ -53,31 +86,20 @@ func detect(img *cd.Image, override string) (profile, error) {
 	if m := machineForSig(string(sig), override); m != machineUnknown {
 		return profile{kind: kindCD, machine: m}, nil
 	}
-	switch strings.ToLower(strings.TrimSpace(override)) {
-	case "":
-		return profile{}, fmt.Errorf("core: unidentifiable source: no known archive signature at user-data offset 0 (pass --as to override)")
-	default:
-		return profile{}, fmt.Errorf("core: unknown --as value %q (want vr9 or vr5)", override)
-	}
+	return profile{}, fmt.Errorf("core: unidentifiable source: no known archive signature at user-data offset 0 (pass --as to override)")
 }
 
 // machineForSig maps a 32-byte archive signature to a machine (§5.2), falling
-// back to the --as override for a disc whose signature is absent or damaged. An
-// unrecognized, un-overridden signature yields machineUnknown — the single
-// source of the signature→machine and --as-alias table, shared by detect (single
-// disc) and the backup-set grouping (a directory).
-func machineForSig(sig, override string) machine {
+// back to the override machine for a disc whose signature is absent or damaged
+// (machineUnknown when neither applies). It is the single source of the
+// signature→machine table, shared by detect (single disc) and the backup-set
+// grouping (a directory).
+func machineForSig(sig string, override machine) machine {
 	switch sig {
 	case sigVR9:
 		return machineVR9
 	case sigVR5:
 		return machineVR5
 	}
-	switch strings.ToLower(strings.TrimSpace(override)) {
-	case "vr9", "vr9-cd":
-		return machineVR9
-	case "vr5", "vr5-cd":
-		return machineVR5
-	}
-	return machineUnknown
+	return override
 }

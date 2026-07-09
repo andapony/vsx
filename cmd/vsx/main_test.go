@@ -257,6 +257,18 @@ func TestAsOverrideForcesVR9(t *testing.T) {
 	assert.Equal(t, exitError, code2, "without --as the corrupt-signature dump is unidentifiable")
 }
 
+// TestAsOverrideUnknownIsUsageError verifies an unrecognized --as value is
+// rejected at the flag boundary as a usage error (ParseAs), before any Source is
+// opened, rather than surfacing later as a fatal extraction failure.
+func TestAsOverrideUnknownIsUsageError(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src.bin")
+	require.NoError(t, os.WriteFile(src, tracerDisc().BuildRaw(), 0o644))
+
+	code, _, stderr := runCLI("--as", "bogus", "-o", t.TempDir(), src)
+	assert.Equal(t, exitUsage, code)
+	assert.Contains(t, stderr, "unknown --as value")
+}
+
 // TestDeviationFlipsExitCodeButStillWrites verifies best-effort mode: a run that
 // hits a deviation exits non-zero yet still writes all recoverable output.
 func TestDeviationFlipsExitCodeButStillWrites(t *testing.T) {
