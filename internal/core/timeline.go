@@ -39,19 +39,11 @@ func buildVTrack(g vtrackGroup, takes map[uint16]PCM, origin int, song SongRef, 
 	evs := g.events
 	loc := fmt.Sprintf("song %d / track %d / v-track %d", song.Number, g.track, g.vtrack)
 
-	hasAudio := false
-	length := 0
-	for _, e := range evs {
-		if e.fileID != 0 {
-			hasAudio = true
-		}
-		if end := (int(e.end) - origin) * samplesPerFrame; end > length {
-			length = end
-		}
-	}
+	hasAudio, endFrame := vtrackStats(g, origin)
 	if !hasAudio {
 		return TrackResult{}, false, nil // empty v-track: no file
 	}
+	length := endFrame * samplesPerFrame
 
 	var devs []Deviation
 	buf := make([]int32, length)
@@ -129,6 +121,25 @@ func buildVTrack(g vtrackGroup, takes map[uint16]PCM, origin int, song SongRef, 
 			SampleRate:   aud.sampleRate,
 		},
 	}, true, devs
+}
+
+// vtrackStats reduces one v-track group to the two facts both consumers need: is
+// it populated (has at least one take-bearing event, §8) and its end frame — the
+// maximum origin-relative end across every event in the group (audio or erase).
+// It is the single definition of "populated" and "length in frames" that
+// buildVTrack (which scales the frame count to samples) and summarizeVTracks
+// (which reports frames straight) both read, so Extract and List cannot disagree
+// on a song's v-track count or duration.
+func vtrackStats(g vtrackGroup, origin int) (hasAudio bool, endFrame int) {
+	for _, e := range g.events {
+		if e.fileID != 0 {
+			hasAudio = true
+		}
+		if end := int(e.end) - origin; end > endFrame {
+			endFrame = end
+		}
+	}
+	return hasAudio, endFrame
 }
 
 // clearRange zeroes buf over [at, at+span), clamped to the buffer, so a
