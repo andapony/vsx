@@ -35,3 +35,22 @@ The `--strict` posture: a pass/fail conformance gate that aborts the whole run
 with no output on the first deviation. Answers "is this a spec-clean image?"
 rather than "what audio can I recover?"
 _Avoid_: validate mode, check mode.
+
+**Machine format**:
+The seam behind which one recorder family's event-list layout sits (ADR-0003):
+a `machineFormat` adapter (`vr5` for the VS-1880, `vr9` for the VS-880EX) whose
+one job is the *event-list → timeline reduction*. A third machine slots in as a
+third adapter, editing no dispatch. `formatFor` resolves a detected *machine*
+identity to its adapter.
+_Avoid_: machine handler, codec (the codec is the RDAC *Decoder*, a separate
+seam — ADR-0004).
+
+**Parsed song timeline**:
+The machine-neutral result of that reduction (`songTimeline`): a list of
+*v-track groups* (`vtrackGroup` — a v-track's 1-based track, v-track, name, and
+its current-timeline *event records*) plus the *origin* frame the events are
+measured from. Both machines reduce to it; both the extractor's build and the
+lister's summary consume it unchanged, so List and Extract agree by
+construction.
+_Avoid_: event list (the raw on-disc bytes, before reduction), timeline (the
+spec's per-take placement concept).

@@ -215,22 +215,29 @@ func parseVR5EventList(data []byte) ([]vr5Entry, []Deviation) {
 // from zero, so nothing is subtracted (unlike VR9's origin of 12).
 const vr5Origin = 0
 
-// buildVR5Tracks replays the parsed V-track table into one PCM buffer per
-// populated v-track (§8.1), reusing the shared timeline kernel with the VR5
-// origin. Track/v-track come from table position; a user-assigned track name is
-// carried into the result so the writer can append it to the filename.
-func buildVR5Tracks(entries []vr5Entry, takes map[uint16]PCM, song SongRef, aud audioSpec, stereo bool) ([]TrackResult, []Deviation) {
-	var built []builtTrack
-	var devs []Deviation
-	for _, ent := range entries {
-		tr, ok, d := buildVTrack(ent.events, takes, vr5Origin, song, ent.track, ent.vtrack,
-			userTrackName(ent.name), aud)
-		devs = append(devs, d...)
-		if ok {
-			built = append(built, builtTrack{result: tr, events: ent.events})
-		}
+// vr5 is the VS-1880 event-list adapter (ADR-0003): a positional 288-entry
+// V-track table (§6.1), replayed at origin 0 (§3), carrying user track names.
+type vr5 struct{}
+
+// parseTimeline reduces a VS-1880 V-track table (§6.1) to a machine-neutral
+// songTimeline: each positional entry maps to a v-track group at its
+// table-derived track and v-track, with its name normalized so only a
+// user-assigned name (not the "V.T…" default) survives into the filename.
+func (vr5) parseTimeline(data []byte) (songTimeline, []Deviation) {
+	entries, devs := parseVR5EventList(data)
+	return songTimeline{origin: vr5Origin, groups: groupVR5Entries(entries)}, devs
+}
+
+// groupVR5Entries maps each positional V-track-table entry (§6.1) to a
+// machine-neutral group, applying the §6.1/§7 default-name rule so a default or
+// blank name yields no filename suffix. Empty positions are retained; the
+// neutral build drops them (no take-bearing event → no TrackResult).
+func groupVR5Entries(entries []vr5Entry) []vtrackGroup {
+	groups := make([]vtrackGroup, len(entries))
+	for i, ent := range entries {
+		groups[i] = vtrackGroup{track: ent.track, vtrack: ent.vtrack, name: userTrackName(ent.name), events: ent.events}
 	}
-	return pairTracks(built, stereo), devs
+	return groups
 }
 
 // userTrackName returns a table entry's name only when it is user-assigned
@@ -322,7 +329,7 @@ func extractVR5Song(g songGroup, number int, numDevs []Deviation, key SongKey, d
 		return nil, append(devs, Deviation{Location: loc, SpecRef: "§6.1", Severity: SeverityError,
 			Message: fmt.Sprintf("reading event list: %v", err)})
 	}
-	entries, edevs := parseVR5EventList(data)
+	st, edevs := vr5{}.parseTimeline(data)
 	devs = append(devs, edevs...)
 
 	sampleRate, rateDev := rateFromByte(elst.rateByte, loc)
@@ -331,16 +338,11 @@ func extractVR5Song(g songGroup, number int, numDevs []Deviation, key SongKey, d
 	}
 	format := Format(elst.formatCode)
 
-	var refs []uint16
-	for _, ent := range entries {
-		for _, e := range ent.events {
-			refs = append(refs, e.fileID)
-		}
-	}
+	refs, _ := gatherRefs(st) // CD has no §8.3 cluster-count check; counts unused
 	takes, takeDevs := decodeTakes(img, dec, g.files, refs, format, loc)
 	devs = append(devs, takeDevs...)
 
-	tracks, tlDevs := buildVR5Tracks(entries, takes, SongRef{Key: key, Number: number, Name: g.name},
+	tracks, tlDevs := buildTracks(st, takes, SongRef{Key: key, Number: number, Name: g.name},
 		audioSpec{sampleRate: sampleRate, format: format, clusterSize: blockSize}, stereo)
 	devs = append(devs, tlDevs...)
 	return tracks, devs

@@ -22,6 +22,14 @@ func decodeTake(t *testing.T, mt2 []byte) PCM {
 // take's decoded samples are non-trivial and unique, making placement testable.
 func mt2Bytes(fill byte, nBlocks int) []byte { return bytes.Repeat([]byte{fill}, 12*nBlocks) }
 
+// vr9Timeline wraps a hand-built VS-880EX event list into the machine-neutral
+// songTimeline buildTracks consumes, applying the VR9 code→track/v-track
+// grouping and origin exactly as vr9.parseTimeline does — so a test can exercise
+// the neutral build from raw events without hand-forming groups.
+func vr9Timeline(events []vr9Event) songTimeline {
+	return songTimeline{origin: vr9OriginFrames, groups: groupVR9Events(events)}
+}
+
 // TestBuildVR9TracksPlacement is the §8.2 timeline specification as a test:
 // VR9 origin = 12 shifts frame positions, gaps fill with silence, a trim skips
 // into the take, later records win on overlap, and an erase writes silence.
@@ -52,7 +60,7 @@ func TestBuildVR9TracksPlacement(t *testing.T) {
 		{start: 12, end: 16, trimmed: 0, fileID: 0, code: 24},
 	}
 
-	tracks, devs := buildVR9Tracks(events, takes, SongRef{Number: 1, Name: "S"}, audioSpec{sampleRate: 44100, format: FormatMT2, clusterSize: blockSize}, false)
+	tracks, devs := buildTracks(vr9Timeline(events), takes, SongRef{Number: 1, Name: "S"}, audioSpec{sampleRate: 44100, format: FormatMT2, clusterSize: blockSize}, false)
 	assert.Empty(t, devs)
 
 	byCode := map[[2]int]TrackResult{}
@@ -114,7 +122,7 @@ func TestBuildVR9TracksSkipsEmpty(t *testing.T) {
 	events := []vr9Event{{start: 12, end: 16, fileID: 0xA, code: 0}}
 	takes := map[uint16]PCM{0xA: decodeTake(t, mt2Bytes(0x11, 4))}
 
-	tracks, _ := buildVR9Tracks(events, takes, SongRef{Number: 1}, audioSpec{sampleRate: 44100, format: FormatMT2, clusterSize: blockSize}, false)
+	tracks, _ := buildTracks(vr9Timeline(events), takes, SongRef{Number: 1}, audioSpec{sampleRate: 44100, format: FormatMT2, clusterSize: blockSize}, false)
 	require.Len(t, tracks, 1)
 	assert.Equal(t, 1, tracks[0].Track)
 	assert.Equal(t, 1, tracks[0].VTrack)
@@ -127,7 +135,7 @@ func TestBuildVR9TracksTruncatedTake(t *testing.T) {
 	events := []vr9Event{{start: 12, end: 16, fileID: 0xA, code: 0}}
 	takes := map[uint16]PCM{0xA: decodeTake(t, mt2Bytes(0x11, 2))}
 
-	tracks, devs := buildVR9Tracks(events, takes, SongRef{Number: 1}, audioSpec{sampleRate: 44100, format: FormatMT2, clusterSize: blockSize}, false)
+	tracks, devs := buildTracks(vr9Timeline(events), takes, SongRef{Number: 1}, audioSpec{sampleRate: 44100, format: FormatMT2, clusterSize: blockSize}, false)
 	require.Len(t, tracks, 1)
 	require.Len(t, tracks[0].PCM.Samples, 64)
 	assert.Equal(t, takes[0xA].Samples, tracks[0].PCM.Samples[:32])

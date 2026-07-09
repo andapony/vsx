@@ -184,14 +184,23 @@ type vr9Event struct {
 	code                int
 }
 
-// buildVR9Tracks replays a VS-880EX event log into one PCM buffer per populated
-// v-track (§8.2): records group by v-track code in log order, then each group is
-// replayed by the shared timeline kernel with the VR9 origin. A v-track with no
-// take-bearing record yields no TrackResult. The VR9 log carries no per-track
-// name, so results carry the default (empty) Name.
-func buildVR9Tracks(events []vr9Event, takes map[uint16]PCM, song SongRef, aud audioSpec, stereo bool) ([]TrackResult, []Deviation) {
-	// Group events by v-track code, preserving log order, and remember the
-	// code ordering so output is deterministic.
+// vr9 is the VS-880EX event-list adapter (ADR-0003): a flat event log whose
+// records each carry a v-track code, replayed at origin 12 (§3).
+type vr9 struct{}
+
+// parseTimeline reduces a VS-880EX event log (§6.2/§8.2) to a machine-neutral
+// songTimeline: records group by v-track code in log order, each code mapping to
+// its 1-based track and v-track. The VR9 log carries no per-track name, so every
+// group's name is the default (empty).
+func (vr9) parseTimeline(data []byte) (songTimeline, []Deviation) {
+	events, devs := parseVR9Log(data)
+	return songTimeline{origin: vr9OriginFrames, groups: groupVR9Events(events)}, devs
+}
+
+// groupVR9Events groups a parsed VS-880EX event log by v-track code (§8.2),
+// preserving first-seen (log) order so output is deterministic, and maps each
+// code to its 1-based track (code/8+1) and v-track (code%8+1).
+func groupVR9Events(events []vr9Event) []vtrackGroup {
 	byCode := map[int][]vr9Event{}
 	var codeOrder []int
 	for _, e := range events {
@@ -200,23 +209,15 @@ func buildVR9Tracks(events []vr9Event, takes map[uint16]PCM, song SongRef, aud a
 		}
 		byCode[e.code] = append(byCode[e.code], e)
 	}
-
-	var built []builtTrack
-	var devs []Deviation
+	groups := make([]vtrackGroup, 0, len(codeOrder))
 	for _, code := range codeOrder {
 		evs := make([]timelineEvent, len(byCode[code]))
 		for i, e := range byCode[code] {
 			evs[i] = timelineEvent{start: e.start, end: e.end, trimmed: e.trimmed, fileID: e.fileID, clusterCount: e.clusterCount}
 		}
-		track := code/8 + 1
-		vtrack := code%8 + 1
-		tr, ok, d := buildVTrack(evs, takes, vr9OriginFrames, song, track, vtrack, "", aud)
-		devs = append(devs, d...)
-		if ok {
-			built = append(built, builtTrack{result: tr, events: evs})
-		}
+		groups = append(groups, vtrackGroup{track: code/8 + 1, vtrack: code%8 + 1, events: evs})
 	}
-	return pairTracks(built, stereo), devs
+	return groups
 }
 
 // vr9RecordSize is the fixed VS-880EX event-record length (§1/§7).
@@ -327,7 +328,7 @@ func extractSong(img cdSource, dec Decoder, g songGroup, key SongKey, stereo boo
 		return nil, []Deviation{{Location: loc, SpecRef: "§6.2", Severity: SeverityError,
 			Message: fmt.Sprintf("reading event list: %v", err)}}
 	}
-	events, devs := parseVR9Log(data)
+	st, devs := vr9{}.parseTimeline(data)
 
 	sampleRate, rateDev := rateFromByte(elst.rateByte, loc)
 	if rateDev != nil {
@@ -335,14 +336,11 @@ func extractSong(img cdSource, dec Decoder, g songGroup, key SongKey, stereo boo
 	}
 	format := Format(elst.formatCode)
 
-	refs := make([]uint16, 0, len(events))
-	for _, e := range events {
-		refs = append(refs, e.fileID)
-	}
+	refs, _ := gatherRefs(st) // CD has no §8.3 cluster-count check; counts unused
 	takes, takeDevs := decodeTakes(img, dec, g.files, refs, format, loc)
 	devs = append(devs, takeDevs...)
 
-	tracks, tlDevs := buildVR9Tracks(events, takes, SongRef{Key: key, Number: int(g.number), Name: g.name},
+	tracks, tlDevs := buildTracks(st, takes, SongRef{Key: key, Number: int(g.number), Name: g.name},
 		audioSpec{sampleRate: sampleRate, format: format, clusterSize: blockSize}, stereo)
 	devs = append(devs, tlDevs...)
 	return tracks, devs
