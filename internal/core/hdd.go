@@ -44,66 +44,82 @@ func extractHDD(vol *hdd.Volume, ctx extractCtx) (iter.Seq2[TrackResult, error],
 	}, nil
 }
 
-// extractHDDSong replays one song directory into per-v-track results: read
-// SONG.VRx for the number/name/rate/format (§4.4), parse EVENTLST.VRx in the
-// machine's form (§4.5 positional table / §4.6 flat log), resolve and integrity-
-// check the referenced takes (§4.3/§8.3), and build the timeline with the shared
-// kernel using the partition's BPB cluster size (§4.2, for MT2 page-padding).
-func extractHDDSong(dec Decoder, song hdd.Song, stereo bool) ([]TrackResult, []Deviation) {
+// parseHDDSong runs one song directory's prologue: read SONG.VRx for the
+// number/name/rate/format (§4.4), then parse EVENTLST.VRx in the machine's form
+// (§4.5 positional table / §4.6 flat log) into the machine-neutral parsedSong
+// both List and Extract consume. It also returns the song's directory entries so
+// Extract can resolve takes without re-reading the directory (List discards
+// them). Deviations are reported in one canonical order — SONG-header, then
+// sample-rate, then event-list — for every point the prologue reaches; a failure
+// leaves the timeline empty with the reason in the deviations. The partition's
+// BPB cluster size (§4.2) rides in the audio spec for MT2 page-padding.
+func parseHDDSong(song hdd.Song) (parsedSong, []hdd.Entry, []Deviation) {
+	key := hddSongKey(song.Partition, song.Index)
+	ps := parsedSong{ref: SongRef{Key: key}, machine: song.Ext}
+
 	files, err := song.Files()
 	if err != nil {
-		return nil, []Deviation{{Location: song.Name, SpecRef: "§4.3", Severity: SeverityError,
+		return ps, nil, []Deviation{{Location: song.Name, SpecRef: "§4.3", Severity: SeverityError,
 			Message: fmt.Sprintf("reading song directory: %v", err)}}
 	}
 
 	songEntry, ok := findHDDFile(files, "SONG")
 	if !ok {
-		return nil, []Deviation{{Location: song.Name, SpecRef: "§4.4", Severity: SeverityError,
+		return ps, files, []Deviation{{Location: song.Name, SpecRef: "§4.4", Severity: SeverityError,
 			Message: "no SONG file in directory; cannot determine format or rate"}}
 	}
 	sdata, _, err := songEntry.Read()
 	if err != nil {
-		return nil, []Deviation{{Location: song.Name, SpecRef: "§4.4", Severity: SeverityError,
+		return ps, files, []Deviation{{Location: song.Name, SpecRef: "§4.4", Severity: SeverityError,
 			Message: fmt.Sprintf("reading SONG file: %v", err)}}
 	}
 	number, name, rateByte, formatCode, ok := parseSongFile(sdata)
 	if !ok {
-		return nil, []Deviation{{Location: song.Name, SpecRef: "§4.4", Severity: SeverityError,
+		return ps, files, []Deviation{{Location: song.Name, SpecRef: "§4.4", Severity: SeverityError,
 			Message: "SONG file shorter than its 20-byte header; cannot determine format or rate"}}
 	}
-	loc := fmt.Sprintf("song %d", number)
-	key := hddSongKey(song.Partition, song.Index)
-	ref := SongRef{Key: key, Number: number, Name: name}
-	format := Format(formatCode)
-	sampleRate, rateDev := rateFromByte(rateByte, loc)
-	aud := audioSpec{sampleRate: sampleRate, format: format, clusterSize: song.ClusterSize()}
 
-	elEntry, ok := findHDDFile(files, "EVENTLST")
-	if !ok {
-		return nil, []Deviation{{Location: loc, SpecRef: "§4.3", Severity: SeverityError,
-			Message: "no EVENTLST file for song; nothing to extract"}}
-	}
-	eldata, _, err := elEntry.Read()
-	if err != nil {
-		return nil, []Deviation{{Location: loc, SpecRef: "§4.5", Severity: SeverityError,
-			Message: fmt.Sprintf("reading event list: %v", err)}}
-	}
+	loc := fmt.Sprintf("song %d", number)
+	ps.ref = SongRef{Key: key, Number: number, Name: name}
+	sampleRate, rateDev := rateFromByte(rateByte, loc)
+	ps.aud = audioSpec{sampleRate: sampleRate, format: Format(formatCode), clusterSize: song.ClusterSize()}
 
 	var devs []Deviation
 	if rateDev != nil {
 		devs = append(devs, *rateDev)
 	}
 
+	elEntry, ok := findHDDFile(files, "EVENTLST")
+	if !ok {
+		return ps, files, append(devs, Deviation{Location: loc, SpecRef: "§4.3", Severity: SeverityError,
+			Message: "no EVENTLST file for song; nothing to extract"})
+	}
+	eldata, _, err := elEntry.Read()
+	if err != nil {
+		return ps, files, append(devs, Deviation{Location: loc, SpecRef: "§4.5", Severity: SeverityError,
+			Message: fmt.Sprintf("reading event list: %v", err)})
+	}
 	mf, extDev := hddFormat(song.Ext, loc)
 	if extDev != nil {
-		return nil, append(devs, *extDev)
+		return ps, files, append(devs, *extDev)
 	}
 	st, edevs := mf.parseTimeline(eldata)
-	devs = append(devs, edevs...)
-	refs, counts := gatherRefs(st)
-	takes, tdevs := decodeHDDTakes(files, dec, refs, counts, format, loc)
+	ps.st = st
+	return ps, files, append(devs, edevs...)
+}
+
+// extractHDDSong replays one song directory into per-v-track results: it runs the
+// shared parseHDDSong prologue, then resolves and integrity-checks the referenced
+// takes (§4.3/§8.3) and builds the timeline with the shared kernel. On a prologue
+// that produced no timeline the reference gathering is empty, so no take is read
+// and no track is built — the prologue's deviations are the whole result.
+func extractHDDSong(dec Decoder, song hdd.Song, stereo bool) ([]TrackResult, []Deviation) {
+	ps, files, devs := parseHDDSong(song)
+	loc := fmt.Sprintf("song %d", ps.ref.Number)
+	refs, counts := gatherRefs(ps.st)
+	takes, tdevs := decodeHDDTakes(files, dec, refs, counts, ps.aud.format, loc)
 	devs = append(devs, tdevs...)
-	tracks, tldevs := buildTracks(st, takes, ref, aud, stereo)
+	tracks, tldevs := buildTracks(ps.st, takes, ps.ref, ps.aud, stereo)
 	return tracks, append(devs, tldevs...)
 }
 

@@ -67,6 +67,10 @@ type Song struct {
 	Format byte   // SONG.VRx 0x13 format code (§2)
 	Events []Event
 	Takes  []Take
+	// OmitEventList drops the EVENTLST.<ext> file from the song directory (§4.3),
+	// the "no event list; nothing to extract" deviation both List and Extract
+	// must report after the SONG header parses.
+	OmitEventList bool
 }
 
 // Partition is one FAT16 partition of song directories.
@@ -286,9 +290,11 @@ func (b *pbuild) buildSong(s Song) uint16 {
 	songFirst := b.store(s.songFile(), 0)
 	entries = append(entries, dirEntry{name8: "SONG", ext3: s.Ext, firstClus: songFirst, size: len(s.songFile())})
 
-	el := s.eventList()
-	elFirst := b.store(el, 0)
-	entries = append(entries, dirEntry{name8: "EVENTLST", ext3: s.Ext, firstClus: elFirst, size: len(el)})
+	if !s.OmitEventList {
+		el := s.eventList()
+		elFirst := b.store(el, 0)
+		entries = append(entries, dirEntry{name8: "EVENTLST", ext3: s.Ext, firstClus: elFirst, size: len(el)})
+	}
 
 	// Take files, named TAKE%04X after their recording cluster (§4.3).
 	for _, t := range s.Takes {

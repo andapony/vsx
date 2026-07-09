@@ -137,61 +137,19 @@ func listHDD(vol *hdd.Volume) ([]SongInfo, []Deviation) {
 	return out, devs
 }
 
-// summarizeHDDSong reads one HDD song directory's SONG file (number, name,
-// rate, machine extension, §4.4) and EVENTLST (§4.5/§4.6), exactly as
-// extractHDDSong does up to the point takes would be resolved, and reduces it
-// to a catalog entry.
+// summarizeHDDSong reduces one HDD song to a catalog entry through the same
+// parseHDDSong prologue extractHDDSong runs, then summarises the neutral timeline
+// — so the two report identical prologue deviations and agree on the v-track
+// count and length by construction. It decodes no take and constructs no Decoder.
 func summarizeHDDSong(song hdd.Song) (SongInfo, []Deviation) {
-	key := hddSongKey(song.Partition, song.Index)
-
-	files, err := song.Files()
-	if err != nil {
-		return SongInfo{Key: key}, []Deviation{{Location: song.Name, SpecRef: "§4.3", Severity: SeverityError,
-			Message: fmt.Sprintf("reading song directory: %v", err)}}
+	ps, _, devs := parseHDDSong(song)
+	info := SongInfo{
+		Key:          ps.ref.Key,
+		StoredNumber: ps.ref.Number,
+		Name:         ps.ref.Name,
+		Machine:      ps.machine,
+		SampleRate:   ps.aud.sampleRate,
 	}
-
-	songEntry, ok := findHDDFile(files, "SONG")
-	if !ok {
-		return SongInfo{Key: key}, []Deviation{{Location: song.Name, SpecRef: "§4.4", Severity: SeverityError,
-			Message: "no SONG file in directory; cannot determine format or rate"}}
-	}
-	sdata, _, err := songEntry.Read()
-	if err != nil {
-		return SongInfo{Key: key}, []Deviation{{Location: song.Name, SpecRef: "§4.4", Severity: SeverityError,
-			Message: fmt.Sprintf("reading SONG file: %v", err)}}
-	}
-	number, name, rateByte, _, ok := parseSongFile(sdata)
-	if !ok {
-		return SongInfo{Key: key}, []Deviation{{Location: song.Name, SpecRef: "§4.4", Severity: SeverityError,
-			Message: "SONG file shorter than its 20-byte header; cannot determine format or rate"}}
-	}
-
-	loc := fmt.Sprintf("song %d", number)
-	base := SongInfo{Key: key, StoredNumber: number, Name: name, Machine: song.Ext}
-	var devs []Deviation
-	sampleRate, rateDev := rateFromByte(rateByte, loc)
-	if rateDev != nil {
-		devs = append(devs, *rateDev)
-	}
-	base.SampleRate = sampleRate
-
-	elEntry, ok := findHDDFile(files, "EVENTLST")
-	if !ok {
-		return base, append(devs, Deviation{Location: loc, SpecRef: "§4.3", Severity: SeverityError,
-			Message: "no EVENTLST file for song; nothing to extract"})
-	}
-	eldata, _, err := elEntry.Read()
-	if err != nil {
-		return base, append(devs, Deviation{Location: loc, SpecRef: "§4.5", Severity: SeverityError,
-			Message: fmt.Sprintf("reading event list: %v", err)})
-	}
-
-	mf, extDev := hddFormat(song.Ext, loc)
-	if extDev != nil {
-		return base, append(devs, *extDev)
-	}
-	st, edevs := mf.parseTimeline(eldata)
-	devs = append(devs, edevs...)
-	base.VTracks, base.Frames = summarizeVTracks(st)
-	return base, devs
+	info.VTracks, info.Frames = summarizeVTracks(ps.st)
+	return info, devs
 }
