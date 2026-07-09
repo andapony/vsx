@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/andapony/vsx/internal/core"
+	"github.com/andapony/vsx/internal/hddfix"
 	"github.com/andapony/vsx/internal/vsfix"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,6 +39,32 @@ func tracerDisc() vsfix.Disc {
 	}
 }
 
+// twoSongTracerDisc is a two-song VR9 archive, each song carrying one
+// populated v-track, used to exercise the --song selection CLI flag. Songs
+// are numbered 1 and 2 so their CD keys are "1" and "2" and their folders are
+// "01 - …" / "02 - …".
+func twoSongTracerDisc() vsfix.Disc {
+	return vsfix.Disc{
+		SetID: [4]byte{1, 2, 3, 4},
+		Songs: []vsfix.Song{
+			{
+				Number: 1, Name: "SONG ONE",
+				Takes: []vsfix.Take{{FileID: 0x0100, Name: "TAKE0100", MT2: make([]byte, 12*4)}},
+				Events: []vsfix.Event{
+					{Start: 12, End: 16, FileID: 0x0100, Track: 1, VTrack: 1},
+				},
+			},
+			{
+				Number: 2, Name: "SONG TWO",
+				Takes: []vsfix.Take{{FileID: 0x0200, Name: "TAKE0200", MT2: make([]byte, 12*4)}},
+				Events: []vsfix.Event{
+					{Start: 12, End: 16, FileID: 0x0200, Track: 1, VTrack: 1},
+				},
+			},
+		},
+	}
+}
+
 // runCLI invokes run with captured stdout/stderr and returns the exit code
 // alongside both streams, so tests can assert on the manifest/diagnostics
 // split.
@@ -44,6 +72,38 @@ func runCLI(args ...string) (code int, stdout, stderr string) {
 	var out, errBuf bytes.Buffer
 	code = run(args, &out, &errBuf)
 	return code, out.String(), errBuf.String()
+}
+
+// TestHDDCollidingSongsGetDistinctFolders verifies the multi-partition HDD
+// collision fix: two partitions each holding a SONG0000 with the same stored
+// number and name must land in distinct output folders (named by SongKey)
+// instead of overwriting each other.
+func TestHDDCollidingSongsGetDistinctFolders(t *testing.T) {
+	// Two partitions, each a SONG0000 named "INIT" with the same stored number —
+	// the collision that overwrote output before the key change.
+	// Format is pinned to the uncompressed M16 codec (as the other clean HDD
+	// fixtures in internal/core/hdd_test.go do) so the all-zero take content
+	// decodes with no deviations, and the event covers only one frame (as those
+	// fixtures' events do) so the 48-byte take comfortably covers the span —
+	// this test is about the folder-collision fix, not about deviation
+	// reporting, so the run must come back clean.
+	song := hddfix.Song{
+		Number: 5, Name: "INIT", Ext: "VR9", Format: byte(core.FormatM16),
+		Takes:  []hddfix.Take{{NameCluster: 0x0100, Content: make([]byte, 12*4)}},
+		Events: []hddfix.Event{{Start: 12, End: 13, NameCluster: 0x0100, Track: 1, VTrack: 1}},
+	}
+	disk := hddfix.Disk{Partitions: []hddfix.Partition{
+		{Songs: []hddfix.Song{song}}, {Songs: []hddfix.Song{song}},
+	}}
+	imgPath := filepath.Join(t.TempDir(), "collide.img")
+	require.NoError(t, os.WriteFile(imgPath, disk.Build(), 0o644))
+
+	out := t.TempDir()
+	code, _, stderr := runCLI("-o", out, imgPath)
+	require.Equal(t, exitOK, code, "stderr: %s", stderr)
+	assert.DirExists(t, filepath.Join(out, "01.000 - INIT"))
+	assert.DirExists(t, filepath.Join(out, "02.000 - INIT"))
+	assert.Equal(t, 2, countWavs(t, out), "no overwrite — two distinct v-track files")
 }
 
 // TestNoArgsPrintsUsageAndExitsNonZero verifies the acceptance criterion that
@@ -409,4 +469,37 @@ func TestExtractsVR5DiscWithNamedTrack(t *testing.T) {
 	named := filepath.Join(out, "07 - MIXDOWN", "T1-V1 Bass.wav")
 	assert.FileExists(t, named, "user track name is appended to the filename")
 	assert.Contains(t, stdout, "T1-V1 Bass.wav")
+}
+
+// TestSongFlagExtractsOnlySelected verifies that --song restricts extraction
+// to the selected song(s) only.
+func TestSongFlagExtractsOnlySelected(t *testing.T) {
+	src := writeDisc(t, twoSongTracerDisc())
+	out := t.TempDir()
+	code, stdout, stderr := runCLI("--song", "2", "-o", out, src)
+	require.Equal(t, exitOK, code, "stderr: %s", stderr)
+	assert.Contains(t, stdout, "02 - ") // only song 2's folder
+	assert.NotContains(t, stdout, "01 - ")
+}
+
+// TestSongFlagUnknownKeyFailsWithHint verifies that a --song key not present
+// on the source fails up front (before any output is written) with a hint to
+// use --list, and a usage-error exit code.
+func TestSongFlagUnknownKeyFailsWithHint(t *testing.T) {
+	src := writeDisc(t, twoSongTracerDisc())
+	out := t.TempDir()
+	code, stdout, stderr := runCLI("--song", "9", "-o", out, src)
+	assert.Equal(t, exitUsage, code)
+	assert.Empty(t, stdout, "nothing written on an unknown key")
+	assert.Equal(t, 0, countWavs(t, out))
+	assert.Contains(t, stderr, "no song 9")
+	assert.Contains(t, stderr, "--list")
+}
+
+// TestSongFlagMalformedKeyIsUsageError verifies that a malformed --song key is
+// a usage error, not a fatal crash.
+func TestSongFlagMalformedKeyIsUsageError(t *testing.T) {
+	src := writeDisc(t, twoSongTracerDisc())
+	code, _, _ := runCLI("--song", "x.y", "-o", t.TempDir(), src)
+	assert.Equal(t, exitUsage, code)
 }

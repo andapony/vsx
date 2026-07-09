@@ -257,26 +257,31 @@ func userTrackName(name string) string {
 // and replay deviations as each song is consumed. Files are grouped into songs
 // by header song name (§5.4), one song processed at a time so a large Source is
 // never fully materialized.
-func extractVR5(img cdSource, dec Decoder, devs *[]Deviation, stereo bool, report func(Progress)) (iter.Seq2[TrackResult, error], error) {
+func extractVR5(img cdSource, ctx extractCtx) (iter.Seq2[TrackResult, error], error) {
 	files, wdevs, err := walkVR5(img)
 	if err != nil {
 		return nil, err
 	}
-	*devs = append(*devs, wdevs...)
+	*ctx.devs = append(*ctx.devs, wdevs...)
 	groups := groupVR5Songs(files)
 
 	return func(yield func(TrackResult, error) bool) {
 		for i, g := range groups {
-			report(Progress{Phase: ProgressExtracting, Song: i + 1, TotalSongs: len(groups), SongName: g.name})
-			tracks, sdevs := extractVR5Song(img, dec, g, i, stereo)
-			*devs = append(*devs, sdevs...)
+			number, ndevs := vr5SongNumber(img, g.files, i)
+			key := cdSongKey(number)
+			if !ctx.selected(key) {
+				continue
+			}
+			ctx.report(Progress{Phase: ProgressExtracting, Song: i + 1, TotalSongs: len(groups), SongName: g.name})
+			tracks, sdevs := extractVR5Song(g, number, ndevs, key, ctx.dec, img, ctx.stereo)
+			*ctx.devs = append(*ctx.devs, sdevs...)
 			for _, tr := range tracks {
 				if !yield(tr, nil) {
 					return
 				}
 			}
 		}
-		report(Progress{Phase: ProgressDone})
+		ctx.report(Progress{Phase: ProgressDone})
 	}, nil
 }
 
@@ -299,12 +304,12 @@ func groupVR5Songs(files []fileEntry) []songGroup {
 }
 
 // extractVR5Song replays one song's V-track table against its takes into
-// per-v-track results. The song number is read from the song's SONG file
-// (§4.4); takes are resolved by FileID, which on VR5 CD is the take's archive
-// filename number (§5.7).
-func extractVR5Song(img cdSource, dec Decoder, g songGroup, index int, stereo bool) ([]TrackResult, []Deviation) {
-	number, ndevs := vr5SongNumber(img, g.files, index)
-	devs := ndevs
+// per-v-track results. number, numDevs, and key are resolved by the caller
+// (extractVR5) from the song's SONG file (§4.4) before any take is read, so
+// Options.Songs filtering happens ahead of this call; takes are resolved by
+// FileID, which on VR5 CD is the take's archive filename number (§5.7).
+func extractVR5Song(g songGroup, number int, numDevs []Deviation, key SongKey, dec Decoder, img cdSource, stereo bool) ([]TrackResult, []Deviation) {
+	devs := numDevs
 	loc := fmt.Sprintf("song %d", number)
 
 	elst, ok := findEventList(g.files)
@@ -335,7 +340,7 @@ func extractVR5Song(img cdSource, dec Decoder, g songGroup, index int, stereo bo
 	takes, takeDevs := decodeTakes(img, dec, g.files, refs, format, loc)
 	devs = append(devs, takeDevs...)
 
-	tracks, tlDevs := buildVR5Tracks(entries, takes, SongRef{Number: number, Name: g.name},
+	tracks, tlDevs := buildVR5Tracks(entries, takes, SongRef{Key: key, Number: number, Name: g.name},
 		audioSpec{sampleRate: sampleRate, format: format, clusterSize: blockSize}, stereo)
 	devs = append(devs, tlDevs...)
 	return tracks, devs

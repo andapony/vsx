@@ -11,6 +11,60 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// collidingHDD builds a two-partition VR9 HDD image where both partitions hold a
+// SONG0000 with the SAME stored number and name — the multi-partition collision.
+func collidingHDD(t *testing.T) string {
+	t.Helper()
+	song := hddfix.Song{
+		Number: 5, Name: "INIT", Ext: "VR9",
+		Takes:  []hddfix.Take{{NameCluster: 0x0100, Content: make([]byte, 12*4)}},
+		Events: []hddfix.Event{{Start: 12, End: 16, NameCluster: 0x0100, Track: 1, VTrack: 1}},
+	}
+	disk := hddfix.Disk{Partitions: []hddfix.Partition{
+		{Songs: []hddfix.Song{song}}, {Songs: []hddfix.Song{song}},
+	}}
+	path := filepath.Join(t.TempDir(), "collide.img")
+	require.NoError(t, os.WriteFile(path, disk.Build(), 0o644))
+	return path
+}
+
+func TestHDDSongKeysDisambiguateAcrossPartitions(t *testing.T) {
+	r, err := Extract(collidingHDD(t), Options{})
+	require.NoError(t, err)
+	tracks, _ := collectTracks(t, r)
+	require.Len(t, tracks, 2)
+	assert.NotEqual(t, tracks[0].Song.Key, tracks[1].Song.Key, "keys disambiguate across partitions")
+	assert.Equal(t, SongKey{Partition: 1, Ordinal: 0}, tracks[0].Song.Key)
+	assert.Equal(t, SongKey{Partition: 2, Ordinal: 0}, tracks[1].Song.Key)
+	assert.Equal(t, 5, tracks[0].Song.Number, "stored number is retained for display")
+}
+
+// TestHDDSongKeysUniqueWithinPartition locks the intra-partition half of the
+// key fix: the ordinal comes from each song's 0-based enumeration position
+// within its partition, not from parsing the SONGxxxx directory base name.
+// hddfix can't reproduce the real-media case this fix targets (one partition
+// holding two directories that share a SONGxxxx base but differ in machine
+// extension, e.g. SONG0000.VR9 and SONG0000.VR5 — folderOrdinal would collide
+// them onto the same key), since the fixture builder names directories by
+// creation order; this test instead guards that two songs in one partition
+// always get distinct, position-based keys.
+func TestHDDSongKeysUniqueWithinPartition(t *testing.T) {
+	mk := func(name string) hddfix.Song {
+		return hddfix.Song{Number: 5, Name: name, Ext: "VR9",
+			Takes:  []hddfix.Take{{NameCluster: 0x0100, Content: make([]byte, 12*4)}},
+			Events: []hddfix.Event{{Start: 12, End: 16, NameCluster: 0x0100, Track: 1, VTrack: 1}}}
+	}
+	disk := hddfix.Disk{Partitions: []hddfix.Partition{{Songs: []hddfix.Song{mk("A"), mk("B")}}}}
+	path := filepath.Join(t.TempDir(), "onepart.img")
+	require.NoError(t, os.WriteFile(path, disk.Build(), 0o644))
+	r, err := Extract(path, Options{})
+	require.NoError(t, err)
+	tracks, _ := collectTracks(t, r)
+	require.Len(t, tracks, 2)
+	assert.Equal(t, SongKey{Partition: 1, Ordinal: 0}, tracks[0].Song.Key)
+	assert.Equal(t, SongKey{Partition: 1, Ordinal: 1}, tracks[1].Song.Key)
+}
+
 // writeDisk builds a synthetic HDD image and writes it to a temp file, returning
 // the path — the input contract Extract takes (one path in).
 func writeDisk(t *testing.T, d hddfix.Disk) string {

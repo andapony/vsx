@@ -44,6 +44,32 @@ type Options struct {
 	// when it is nil, and the callback must not block. Calls arrive on the
 	// goroutine driving the track iterator, in order.
 	Progress func(Progress)
+
+	// Songs restricts extraction to these songs; empty means all.
+	Songs []SongKey
+}
+
+// extractCtx carries the per-run values every extractor needs, so the extractor
+// signatures stay narrow as the pipeline grows.
+type extractCtx struct {
+	dec    Decoder
+	devs   *[]Deviation
+	stereo bool
+	report func(Progress)
+	songs  []SongKey // Options.Songs filter; empty means all
+}
+
+// selected reports whether key is in the filter (empty filter = everything).
+func (c extractCtx) selected(key SongKey) bool {
+	if len(c.songs) == 0 {
+		return true
+	}
+	for _, k := range c.songs {
+		if k == key {
+			return true
+		}
+	}
+	return false
 }
 
 // ProgressPhase is the coarse stage an extraction has reached.
@@ -107,8 +133,9 @@ func cookedRipDeviation() Deviation {
 
 // SongRef identifies a song within a Source.
 type SongRef struct {
-	Number int    // the song's catalog number (always present in output names)
-	Name   string // the user-assigned song name, if any
+	Key    SongKey // stable identity for the output folder and --song selection
+	Number int     // the song's stored device number (SONG.VRx), for display
+	Name   string  // the user-assigned song name, if any
 }
 
 // Take carries the resolved take/cluster metadata that produced a v-track's
@@ -179,6 +206,79 @@ func (r Result) Deviations() []Deviation {
 	return *r.deviations
 }
 
+// sourceHandle is the outcome of identifying a single-file Source (a directory
+// is a backup set instead, handled separately by openBackupSet): the opened
+// file plus, on the HDD path, the opened Volume, or on the CD path, the
+// detected Image and machine. identifySource is the single place that decides
+// HDD-vs-CD and, on CD, the machine — Extract and List both call it so the
+// identify/dispatch order can never drift between them.
+type sourceHandle struct {
+	f       *os.File
+	isHDD   bool
+	vol     *hdd.Volume
+	img     *cd.Image
+	machine machine
+	cooked  bool // CD path only: a cooked (dd) rip (§5/§10)
+}
+
+// identifySource opens sourcePath (a single file) and identifies it exactly as
+// the former Extract prologue did: the HDD live-disk check first (unless --as
+// forces the CD path), then CD archive detection. The returned handle's file
+// is open on success and the caller owns closing it; on error the file (if
+// opened) is already closed.
+func identifySource(sourcePath string, info os.FileInfo, opts Options) (sourceHandle, error) {
+	f, err := os.Open(sourcePath)
+	if err != nil {
+		return sourceHandle{}, fmt.Errorf("core: opening source: %w", err)
+	}
+
+	// HDD path (§4): a Roland live disk is identified structurally — its MBR and
+	// a partition BPB's "Roland  " OEM ID — before the CD signature check, since
+	// an HDD image carries no CD archive signature at user-data offset 0.
+	// --as=hdd forces it; any other override forces the CD path; "" autodetects,
+	// trying HDD first and falling through to CD when the image is not Roland.
+	asLower := strings.ToLower(strings.TrimSpace(opts.As))
+	forceHDD := asLower == "hdd"
+	forceCD := asLower != "" && !forceHDD
+	if forceHDD || !forceCD {
+		vol, herr := hdd.Open(f, info.Size())
+		if herr == nil {
+			return sourceHandle{f: f, isHDD: true, vol: vol}, nil
+		}
+		if forceHDD {
+			f.Close()
+			return sourceHandle{}, fmt.Errorf("core: --as=hdd forced but this image is not a Roland live disk: %w", herr)
+		}
+		// autodetect, not a Roland disk: fall through to the CD path.
+	}
+
+	img, err := cd.New(f, info.Size())
+	if err != nil {
+		f.Close()
+		return sourceHandle{}, fmt.Errorf("core: %w", err)
+	}
+
+	// "cd" forces the CD path but leaves the machine to signature autodetection;
+	// "vr9"/"vr5" additionally force the machine when no signature is present.
+	cdOverride := opts.As
+	if asLower == "cd" {
+		cdOverride = ""
+	}
+	p, err := detect(img, cdOverride)
+	if err != nil {
+		f.Close()
+		return sourceHandle{}, err
+	}
+	if p.kind != kindCD {
+		// Defensive: the HDD path is taken above and detect only ever identifies
+		// a CD archive here, so a non-CD kind at this point is unexpected.
+		f.Close()
+		return sourceHandle{}, fmt.Errorf("core: unexpected non-CD source kind after CD detection; machine=%v", p.machine)
+	}
+
+	return sourceHandle{f: f, img: img, machine: p.machine, cooked: img.Cooked()}, nil
+}
+
 // Extract opens the Source at sourcePath, identifies it, and returns a streaming
 // Result. It handles every Source this build supports: HDD live-disk images
 // (§4), single-disc CD Song Copy Archives, and multi-disc CD backup sets (a
@@ -198,76 +298,38 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 	report := progressFn(opts.Progress)
 	report(Progress{Phase: ProgressIdentifying})
 
-	f, err := os.Open(sourcePath)
+	h, err := identifySource(sourcePath, info, opts)
 	if err != nil {
-		return Result{}, fmt.Errorf("core: opening source: %w", err)
+		return Result{}, err
 	}
 	devs := &[]Deviation{}
 
-	// HDD path (§4): a Roland live disk is identified structurally — its MBR and
-	// a partition BPB's "Roland  " OEM ID — before the CD signature check, since
-	// an HDD image carries no CD archive signature at user-data offset 0.
-	// --as=hdd forces it; any other override forces the CD path; "" autodetects,
-	// trying HDD first and falling through to CD when the image is not Roland.
-	asLower := strings.ToLower(strings.TrimSpace(opts.As))
-	forceHDD := asLower == "hdd"
-	forceCD := asLower != "" && !forceHDD
-	if forceHDD || !forceCD {
-		vol, herr := hdd.Open(f, info.Size())
-		if herr == nil {
-			return newHDDResult(f, vol, devs, opts.Stereo, report)
-		}
-		if forceHDD {
-			f.Close()
-			return Result{}, fmt.Errorf("core: --as=hdd forced but this image is not a Roland live disk: %w", herr)
-		}
-		// autodetect, not a Roland disk: fall through to the CD path.
+	if h.isHDD {
+		ctx := extractCtx{dec: NewDecoder(), devs: devs, stereo: opts.Stereo, report: report, songs: opts.Songs}
+		return newHDDResult(h.f, h.vol, ctx)
 	}
 
-	img, err := cd.New(f, info.Size())
-	if err != nil {
-		f.Close()
-		return Result{}, fmt.Errorf("core: %w", err)
-	}
-
-	// "cd" forces the CD path but leaves the machine to signature autodetection;
-	// "vr9"/"vr5" additionally force the machine when no signature is present.
-	cdOverride := opts.As
-	if asLower == "cd" {
-		cdOverride = ""
-	}
-	p, err := detect(img, cdOverride)
-	if err != nil {
-		f.Close()
-		return Result{}, err
-	}
-	if p.kind != kindCD {
-		// Defensive: the HDD path is taken above and detect only ever identifies
-		// a CD archive here, so a non-CD kind at this point is unexpected.
-		f.Close()
-		return Result{}, fmt.Errorf("core: unexpected non-CD source kind after CD detection; machine=%v", p.machine)
-	}
-
-	if img.Cooked() {
+	if h.cooked {
 		*devs = append(*devs, cookedRipDeviation())
 	}
 
+	ctx := extractCtx{dec: NewDecoder(), devs: devs, stereo: opts.Stereo, report: report, songs: opts.Songs}
 	var inner iter.Seq2[TrackResult, error]
-	switch p.machine {
+	switch h.machine {
 	case machineVR9:
-		inner, err = extractVR9(img, NewDecoder(), devs, opts.Stereo, report)
+		inner, err = extractVR9(h.img, ctx)
 	case machineVR5:
-		inner, err = extractVR5(img, NewDecoder(), devs, opts.Stereo, report)
+		inner, err = extractVR5(h.img, ctx)
 	default:
-		f.Close()
-		return Result{}, fmt.Errorf("core: source identified but not yet supported by this build; machine=%v", p.machine)
+		h.f.Close()
+		return Result{}, fmt.Errorf("core: source identified but not yet supported by this build; machine=%v", h.machine)
 	}
 	if err != nil {
-		f.Close()
+		h.f.Close()
 		return Result{}, err
 	}
 
-	return Result{tracks: streamClosing(f, inner), deviations: devs}, nil
+	return Result{tracks: streamClosing(h.f, inner), deviations: devs}, nil
 }
 
 // extractSet groups a directory of CD dumps into one multi-disc backup set
@@ -293,12 +355,13 @@ func extractSet(dir string, opts Options) (Result, error) {
 		*devs = append(*devs, cookedRipDeviation())
 	}
 
+	ctx := extractCtx{dec: NewDecoder(), devs: devs, stereo: opts.Stereo, report: report, songs: opts.Songs}
 	var inner iter.Seq2[TrackResult, error]
 	switch set.machine {
 	case machineVR9:
-		inner, err = extractVR9(set.reader, NewDecoder(), devs, opts.Stereo, report)
+		inner, err = extractVR9(set.reader, ctx)
 	case machineVR5:
-		inner, err = extractVR5(set.reader, NewDecoder(), devs, opts.Stereo, report)
+		inner, err = extractVR5(set.reader, ctx)
 	default:
 		closeAll(set.files)
 		return Result{}, fmt.Errorf("core: backup set machine not supported by this build; machine=%v", set.machine)
@@ -313,13 +376,13 @@ func extractSet(dir string, opts Options) (Result, error) {
 // newHDDResult builds a streaming Result over a Roland live disk, keeping the
 // Source file open for the lifetime of the track iterator and closing it when
 // iteration ends — the same ownership contract as the CD path.
-func newHDDResult(f *os.File, vol *hdd.Volume, devs *[]Deviation, stereo bool, report func(Progress)) (Result, error) {
-	inner, err := extractHDD(vol, NewDecoder(), devs, stereo, report)
+func newHDDResult(f *os.File, vol *hdd.Volume, ctx extractCtx) (Result, error) {
+	inner, err := extractHDD(vol, ctx)
 	if err != nil {
 		f.Close()
 		return Result{}, err
 	}
-	return Result{tracks: streamClosing(f, inner), deviations: devs}, nil
+	return Result{tracks: streamClosing(f, inner), deviations: ctx.devs}, nil
 }
 
 // streamClosing wraps a per-track iterator so the Source file is closed once
