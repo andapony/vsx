@@ -222,21 +222,11 @@ type songGroup struct {
 	files  []fileEntry
 }
 
-// groupSongs partitions the enumerated files by source SONG number, preserving
-// first-seen (walk) order for deterministic output.
+// groupSongs partitions the enumerated files by source SONG number (§5.4).
 func groupSongs(files []fileEntry) []songGroup {
-	idx := map[uint16]int{}
-	var groups []songGroup
-	for _, f := range files {
-		gi, ok := idx[f.songNumber]
-		if !ok {
-			idx[f.songNumber] = len(groups)
-			groups = append(groups, songGroup{number: f.songNumber, name: f.songName})
-			gi = len(groups) - 1
-		}
-		groups[gi].files = append(groups[gi].files, f)
-	}
-	return groups
+	return groupBy(files,
+		func(f fileEntry) uint16 { return f.songNumber },
+		func(f fileEntry) songGroup { return songGroup{number: f.songNumber, name: f.songName} })
 }
 
 // findEventList returns the song's EVENTLST file.
