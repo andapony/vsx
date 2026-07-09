@@ -53,13 +53,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return exitUsage // flag has already written usage/diagnostics to stderr
 	}
-	if fs.NArg() != 1 {
+	sources := fs.Args()
+	if len(sources) < 1 {
 		usage(stderr, fs)
 		return exitUsage
 	}
+	if len(sources) > 1 {
+		for _, a := range sources {
+			info, err := os.Stat(a)
+			if err == nil && info.IsDir() {
+				fmt.Fprintf(stderr, "vsx: when passing multiple sources, each must be a disc file (a directory is already one set)\n")
+				return exitUsage
+			}
+		}
+	}
 
 	if *list {
-		catalog, devs, err := core.List(fs.Arg(0), core.Options{As: *as})
+		catalog, devs, err := listSources(sources, core.Options{As: *as})
 		if err != nil {
 			fmt.Fprintf(stderr, "vsx: %v\n", err)
 			return exitError
@@ -71,7 +81,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(songs.keys) > 0 {
-		catalog, _, err := core.List(fs.Arg(0), core.Options{As: *as})
+		catalog, _, err := listSources(sources, core.Options{As: *as})
 		if err != nil {
 			fmt.Fprintf(stderr, "vsx: %v\n", err)
 			return exitError
@@ -98,7 +108,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	status := newStatusLine(stderr, isTTY(stderr) && !*quiet && !*verbose)
 	opts := core.Options{As: *as, Stereo: *stereo, Progress: status.progress, Songs: songs.keys}
 
-	result, err := core.Extract(fs.Arg(0), opts)
+	result, err := extractSources(sources, opts)
 	if err != nil {
 		status.finish()
 		fmt.Fprintf(stderr, "vsx: %v\n", err)
@@ -109,6 +119,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runStrict(result, *outDir, *quiet, stdout, stderr, status)
 	}
 	return runBestEffort(result, *outDir, *verbose, *quiet, stdout, stderr, status)
+}
+
+// listSources dispatches List over one source path or ListSet over several
+// disc-file paths grouped as one multi-disc backup set (§5.6).
+func listSources(paths []string, opts core.Options) ([]core.SongInfo, []core.Deviation, error) {
+	if len(paths) == 1 {
+		return core.List(paths[0], opts)
+	}
+	return core.ListSet(paths, opts)
+}
+
+// extractSources dispatches Extract over one source path or ExtractSet over
+// several disc-file paths grouped as one multi-disc backup set (§5.6).
+func extractSources(paths []string, opts core.Options) (core.Result, error) {
+	if len(paths) == 1 {
+		return core.Extract(paths[0], opts)
+	}
+	return core.ExtractSet(paths, opts)
 }
 
 // runBestEffort extracts in the default posture (ADR-0002): every recoverable
@@ -322,11 +350,13 @@ func sanitize(name string) string {
 
 func usage(w io.Writer, fs *flag.FlagSet) {
 	fmt.Fprint(w, "vsx — extract audio from Roland VS-series media to WAV\n\n")
-	fmt.Fprint(w, "usage: vsx [flags] <source>\n\n")
-	fmt.Fprint(w, "  <source>  path to an HDD image, a single CD backup-set dump, or a\n")
-	fmt.Fprint(w, "            directory of one set's disc dumps (multi-disc, §5.6)\n\n")
+	fmt.Fprint(w, "usage: vsx [flags] <source>...\n\n")
+	fmt.Fprint(w, "  <source>  path to an HDD image, a single CD backup-set dump, a\n")
+	fmt.Fprint(w, "            directory of one set's disc dumps, or several disc-dump\n")
+	fmt.Fprint(w, "            files given directly (multi-disc, §5.6)\n\n")
 	fmt.Fprint(w, "  vsx --list <source>          list the songs on a source (no extraction)\n")
-	fmt.Fprint(w, "  vsx --song 2.7 <source>      extract only the given song(s)\n\n")
+	fmt.Fprint(w, "  vsx --song 2.7 <source>      extract only the given song(s)\n")
+	fmt.Fprint(w, "  vsx --list a.bin b.bin       a multi-disc set given as separate files\n\n")
 	fmt.Fprint(w, "flags:\n")
 	fs.PrintDefaults()
 }

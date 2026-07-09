@@ -61,6 +61,17 @@ vsx --song 2.7 image.hdd
 vsx --song 2.7 --song 3.1 image.hdd
 ```
 
+A source is an HDD image, a single CD dump, a directory of one backup set's
+disc dumps, **or several disc files named together** — the last is handy for a
+multi-disc set you haven't put in a folder. The same `--list`/`--song` work on
+all of them; multi-disc discs are grouped by set ID and ordered by disc index,
+so filename and argument order don't matter:
+
+```sh
+vsx --list vs-cd-4a.bin vs-cd-4b.bin
+vsx --song 12 -o out vs-cd-4a.bin vs-cd-4b.bin
+```
+
 On HDD sources the output folder is named `PP.OOO - name` (partition number,
 enumeration index within that partition — e.g. `07.017 - LBL 4_19`), because
 the VS device's own song number is not unique across a multi-partition disk.

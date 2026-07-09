@@ -200,6 +200,46 @@ func TestExtractsMultiDiscSet(t *testing.T) {
 	assert.Contains(t, stdout, "T1-V1.wav")
 }
 
+// TestMultiFileArgsListAndExtractAsSet verifies that passing several disc files
+// as separate command-line arguments (rather than staging them in a directory)
+// groups them into one multi-disc backup set (§5.6), for both --list and
+// extraction.
+func TestMultiFileArgsListAndExtractAsSet(t *testing.T) {
+	songs := []vsfix.Song{{
+		Number: 1, Name: "SPANSONG",
+		Takes:  []vsfix.Take{{FileID: 0x0100, Name: "TAKE0100", MT2: make([]byte, 0xC000)}},
+		Events: []vsfix.Event{{Start: 12, End: 12 + 4095, FileID: 0x0100, Track: 1, VTrack: 1}},
+	}}
+	discs := vsfix.VR9Set{SetID: [4]byte{7, 7, 7, 7}, Songs: songs, SpanFileID: 0x0100, SpanAvailBlocks: 1}.BuildDiscsRaw()
+	dir := t.TempDir()
+	d0 := filepath.Join(dir, "a_disc1.bin") // deliberately mis-sorted vs disc index
+	d1 := filepath.Join(dir, "z_disc0.bin")
+	require.NoError(t, os.WriteFile(d0, discs[1], 0o644))
+	require.NoError(t, os.WriteFile(d1, discs[0], 0o644))
+
+	// --list over two file args lists the stitched set's songs.
+	code, stdout, stderr := runCLI("--list", d0, d1)
+	require.Equal(t, exitOK, code, "stderr: %s", stderr)
+	assert.Contains(t, stdout, "SPANSONG")
+
+	// --song over two file args extracts the selected song (ordered by disc index).
+	out := t.TempDir()
+	code, stdout, _ = runCLI("--song", "1", "-o", out, d0, d1)
+	require.Equal(t, exitOK, code)
+	assert.FileExists(t, filepath.Join(out, "01 - SPANSONG", "T1-V1.wav"))
+}
+
+// TestMultipleArgsWithDirectoryIsUsageError verifies that mixing a directory
+// into a multi-file invocation is rejected: a directory is already one set, so
+// combining it with other sources is ambiguous and disallowed rather than
+// silently accepted.
+func TestMultipleArgsWithDirectoryIsUsageError(t *testing.T) {
+	f := writeDisc(t, tracerDisc())
+	code, _, stderr := runCLI("--list", f, t.TempDir())
+	assert.Equal(t, exitUsage, code)
+	assert.Contains(t, stderr, "disc file")
+}
+
 // TestAsOverrideForcesVR9 verifies the --as override drives extraction of a dump
 // whose signature is unrecognized but whose structure is otherwise VR9.
 func TestAsOverrideForcesVR9(t *testing.T) {

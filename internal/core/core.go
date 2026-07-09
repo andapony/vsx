@@ -293,7 +293,11 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 	// A directory is a multi-disc CD backup set (§5.6): its dumps are grouped
 	// into one Source. A single file is one HDD image or one CD disc.
 	if info.IsDir() {
-		return extractSet(sourcePath, opts)
+		paths, err := discPathsInDir(sourcePath)
+		if err != nil {
+			return Result{}, fmt.Errorf("core: reading directory %q: %w", sourcePath, err)
+		}
+		return extractSet(paths, opts)
 	}
 	report := progressFn(opts.Progress)
 	report(Progress{Phase: ProgressIdentifying})
@@ -332,20 +336,26 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 	return Result{tracks: streamClosing(h.f, inner), deviations: devs}, nil
 }
 
-// extractSet groups a directory of CD dumps into one multi-disc backup set
+// ExtractSet treats the given disc-image files as one multi-disc CD backup set
+// (§5.6) — the same grouping a directory of those files gets — and streams its
+// audio. Use it when the discs are passed as separate paths rather than a folder.
+func ExtractSet(paths []string, opts Options) (Result, error) { return extractSet(paths, opts) }
+
+// extractSet groups a list of CD dump files into one multi-disc backup set
 // (§5.6) and streams its audio. Grouping deviations (foreign files, missing
 // discs) are present immediately; the machine-specific walk then runs over the
 // stitched reader exactly as it does for a single disc. The set's disc files
 // stay open for the lifetime of the track iterator and are all closed when it
-// ends. A directory can only be a CD set, so --as=hdd is a usage error here.
-func extractSet(dir string, opts Options) (Result, error) {
+// ends. A CD backup set can only be a CD source, so --as=hdd is a usage error
+// here.
+func extractSet(paths []string, opts Options) (Result, error) {
 	if strings.EqualFold(strings.TrimSpace(opts.As), "hdd") {
-		return Result{}, fmt.Errorf("core: --as=hdd but %q is a directory (an HDD source is a single image, not a directory)", dir)
+		return Result{}, fmt.Errorf("core: --as=hdd is not valid for a multi-disc CD backup set (an HDD source is a single image)")
 	}
 	report := progressFn(opts.Progress)
 	report(Progress{Phase: ProgressIdentifying})
 
-	set, err := openBackupSet(dir, opts)
+	set, err := openBackupSet(paths, opts)
 	if err != nil {
 		return Result{}, err
 	}

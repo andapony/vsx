@@ -62,10 +62,12 @@ cdrdao read-cd --read-raw --driver generic-mmc \
 - `--read-raw` is required — it writes full 2352-byte sectors (user data **plus**
   the EDC/ECC), which is what `vsx` reads and what makes later integrity checks
   possible. `vsx` uses the `.bin`; the `.toc` is not needed.
-- **Multi-disc sets:** rip every disc of the set (`vs-cd-4a.bin`, `vs-cd-4b.bin`, …)
-  into one directory and point `vsx` at the directory. `vsx` groups discs by the
+- **Multi-disc sets:** rip every disc of the set (`vs-cd-4a.bin`, `vs-cd-4b.bin`, …),
+  then either put them in one directory and point `vsx` at the directory, or name
+  the disc files together on the command line
+  (`vsx --list vs-cd-4a.bin vs-cd-4b.bin`). Either way `vsx` groups discs by the
   set ID in each disc's header and orders them by disc index — filenames and
-  command-line order don't matter (§5.6). A set needs *all* its discs present to
+  argument order don't matter (§5.6). A set needs *all* its discs present to
   reconstruct takes that span a disc boundary.
 
 ## Read errors, ECC, and verifying your rip
