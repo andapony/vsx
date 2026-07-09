@@ -123,6 +123,26 @@ func walkCD(img cdSource, lay cdLayout) ([]fileEntry, []Deviation, error) {
 	return files, devs, nil
 }
 
+// groupBy partitions walked files into songs, preserving first-seen (walk) order
+// for deterministic output. keyOf extracts the grouping key (VR9 by stored song
+// number, VR5 by header song name); newGroup seeds a song's header the first time
+// its key is seen. It is the shared skeleton behind both machines' §5.4 grouping.
+func groupBy[K comparable](files []fileEntry, keyOf func(fileEntry) K, newGroup func(fileEntry) songGroup) []songGroup {
+	idx := map[K]int{}
+	var groups []songGroup
+	for _, f := range files {
+		k := keyOf(f)
+		gi, ok := idx[k]
+		if !ok {
+			idx[k] = len(groups)
+			groups = append(groups, newGroup(f))
+			gi = len(groups) - 1
+		}
+		groups[gi].files = append(groups[gi].files, f)
+	}
+	return groups
+}
+
 // extractCD enumerates a CD archive for one machine and returns a lazy iterator
 // over its per-v-track results, appending enumeration deviations to devs
 // immediately and replay deviations as each song is consumed. Files are grouped
