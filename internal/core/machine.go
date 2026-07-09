@@ -37,6 +37,21 @@ type songTimeline struct {
 	groups []vtrackGroup
 }
 
+// parsedSong is the machine-neutral result of a Source's per-song prologue: the
+// song's identity (ref), its catalog machine tag ("VR5"/"VR9"), its audio spec,
+// and its parsed song timeline. One prologue produces it per song; Extract builds
+// tracks from it and List summarises it, so the two agree by construction. On a
+// prologue that fails partway (no SONG file, unreadable or absent event list),
+// the timeline is empty — Extract then decodes and builds nothing, List renders
+// whatever fields were reached — and the returned deviations say why, so neither
+// consumer needs an is-ok flag to check.
+type parsedSong struct {
+	ref     SongRef
+	machine string
+	aud     audioSpec
+	st      songTimeline
+}
+
 // formatFor resolves a detected machine identity to its behavior adapter — the
 // single dispatch point replacing the per-call switch. It returns nil for an
 // unidentified machine, so callers surface the "unsupported machine" deviation
