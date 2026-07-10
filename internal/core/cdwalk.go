@@ -6,51 +6,17 @@ import (
 	"strings"
 )
 
-// cdLayout is the per-machine CD archive layout the one shared chain walk is
-// parameterized by (§5.4/§5.5). It captures every respect in which the VS-1880
-// (VR5) and VS-880EX (VR9) archives diverge — the header field offsets folded
-// into parse and validity, the machine-specific §5.5 validity gate, the block-
-// count derivation, the song grouping, and the catalog-number resolution — so
-// walkCD, extractCD, and listCD carry no machine knowledge. Each adapter supplies
-// one via machineFormat.layout(); a third machine slots in as a third layout,
-// editing no walk.
-type cdLayout struct {
-	// machineName is the SongInfo.Machine tag this archive reports ("VR5"/"VR9").
-	machineName string
-	// sig is the 32-byte archive signature a genuine file header opens with, and
-	// the signature file data never begins with (§5.5 checks 1 and 6).
-	sig string
-	// nameOff is the header offset of the 11-byte filename field the plausible-
-	// name gate reads (§5.5 check 2).
-	nameOff int
-	// headerSpan is how many bytes of a header block the walk must read to see
-	// every field parse, validity, and block-count need.
-	headerSpan int
-	// identityFields are the header byte ranges a spanned file's repeated header
-	// must match on a continuation disc (§5.6).
-	identityFields [][2]int
-	// eventListRef is the spec clause cited when a song's event list cannot be
-	// read (§6.1 the VR5 V-track table, §6.2 the VR9 event log).
-	eventListRef string
-	// accept is the machine-specific §5.5 gate applied after the shared checks:
-	// VR5's `60 BF 51 28` magic (check 3), VR9's clear song-boundary marker flag
-	// (check 4). It is the only validity difference between the machines, so it is
-	// what the isolated validity tests exercise.
-	accept func(hdr []byte) bool
-	// parse reads a validated header's §5.4 fields into a fileEntry.
-	parse func(hdr []byte, udoff int64) fileEntry
-	// blocks derives how many data blocks the file occupies, for the chain step
-	// to the next header (§5.4): VR5 from the file size, VR9 from the stored
-	// block count.
-	blocks func(hdr []byte, fe fileEntry) int64
-	// group partitions the walked files into songs in walk order (§5.4): VR9 by
-	// stored song number, VR5 by header song name.
-	group func(files []fileEntry) []songGroup
-	// songNumber resolves a song group's catalog number (§4.4/§5.4): VR9 reads it
-	// from the header, VR5 from the song's SONG file with a walk-order fallback
-	// (and a deviation) when no SONG file is present.
-	songNumber func(img cdSource, g songGroup, index int) (int, []Deviation)
-}
+// Machine-neutral CD archive geometry (§5.4), shared by every machine's walk so
+// the neutral path depends on no one adapter's file.
+const (
+	// blockSize is the archive cluster size: every header, header copy, song-
+	// boundary block, and data block is one 0x8000-byte cluster.
+	blockSize = 0x8000
+
+	// firstFileHeader is the udoff of the first file header on an index-0 disc:
+	// block 0 is the archive header, block 0x8000 the second copy (§5.4).
+	firstFileHeader = 0x10000
+)
 
 // validCDHeader applies the §5.5 acceptance rules a landed-on block must pass to
 // be a real file header: the archive signature is present (check 1), the filename
@@ -62,10 +28,10 @@ type cdLayout struct {
 // so a layout's validity can be unit-tested against a crafted header without a
 // full fixture image.
 func validCDHeader(img cdSource, lay cdLayout, hdr []byte, udoff, end int64) bool {
-	if string(hdr[:32]) != lay.sig { // check 1
+	if string(hdr[:32]) != lay.sig() { // check 1
 		return false
 	}
-	if !plausibleName(hdr[lay.nameOff : lay.nameOff+11]) { // check 2
+	if !plausibleName(hdr[lay.nameOff() : lay.nameOff()+11]) { // check 2
 		return false
 	}
 	if !lay.accept(hdr) { // check 3 (VR5 magic) / check 4 (VR9 marker)
@@ -76,7 +42,7 @@ func validCDHeader(img cdSource, lay cdLayout, hdr []byte, udoff, end int64) boo
 		return false
 	}
 	next, err := img.ReadUserData(dataOff, 32)
-	if err != nil || string(next) == lay.sig {
+	if err != nil || string(next) == lay.sig() {
 		return false
 	}
 	return true
@@ -104,7 +70,7 @@ func walkCD(img cdSource, lay cdLayout) ([]fileEntry, []Deviation, error) {
 	var files []fileEntry
 	udoff := int64(firstFileHeader)
 	for udoff+blockSize <= end {
-		hdr, err := img.ReadUserData(udoff, lay.headerSpan)
+		hdr, err := img.ReadUserData(udoff, lay.headerSpan())
 		if err != nil {
 			return files, devs, fmt.Errorf("core: reading header block at %#x: %w", udoff, err)
 		}
@@ -116,8 +82,8 @@ func walkCD(img cdSource, lay cdLayout) ([]fileEntry, []Deviation, error) {
 		}
 		fe := lay.parse(hdr, udoff)
 		files = append(files, fe)
-		devs = append(devs, verifyJunction(img, hdr, fe.dataOff, fe.size, lay.headerSpan,
-			lay.identityFields, "file "+strings.TrimRight(fe.filename, " "))...)
+		devs = append(devs, verifyJunction(img, hdr, fe.dataOff, fe.size, lay.headerSpan(),
+			lay.identityFields(), "file "+strings.TrimRight(fe.filename, " "))...)
 		udoff += (1 + lay.blocks(hdr, fe)) * blockSize
 	}
 	return files, devs, nil
@@ -150,17 +116,16 @@ func groupBy[K comparable](files []fileEntry, keyOf func(fileEntry) K, newGroup 
 // never fully materialized. Every machine difference is resolved through the
 // layout and mf.parseTimeline, so this path is shared by both machines.
 func extractCD(img cdSource, mf machineFormat, ctx extractCtx) (iter.Seq2[TrackResult, error], error) {
-	lay := mf.layout()
-	files, wdevs, err := walkCD(img, lay)
+	files, wdevs, err := walkCD(img, mf)
 	if err != nil {
 		return nil, err
 	}
 	*ctx.devs = append(*ctx.devs, wdevs...)
-	groups := lay.group(files)
+	groups := mf.group(files)
 
 	return func(yield func(TrackResult, error) bool) {
 		for i, g := range groups {
-			number, ndevs := lay.songNumber(img, g, i)
+			number, ndevs := mf.songNumber(img, g, i)
 			key := cdSongKey(number)
 			if !ctx.selected(key) {
 				continue
@@ -188,9 +153,8 @@ func extractCD(img cdSource, mf machineFormat, ctx extractCtx) (iter.Seq2[TrackR
 // the timeline empty with the reason in the deviations. Only the event-list spec
 // clause differs per machine (via the layout); the rest is machine-neutral.
 func parseCDSong(img cdSource, mf machineFormat, g songGroup, number int, key SongKey, ndevs []Deviation) (parsedSong, []Deviation) {
-	lay := mf.layout()
 	loc := fmt.Sprintf("song %d", number)
-	ps := parsedSong{ref: SongRef{Key: key, Number: number, Name: g.name}, machine: lay.machineName}
+	ps := parsedSong{ref: SongRef{Key: key, Number: number, Name: g.name}, machine: mf.machineName()}
 	devs := append([]Deviation{}, ndevs...)
 
 	elst, ok := findEventList(g.files)
@@ -200,7 +164,7 @@ func parseCDSong(img cdSource, mf machineFormat, g songGroup, number int, key So
 	}
 	data, err := img.ReadUserData(elst.dataOff, int(elst.size))
 	if err != nil {
-		return ps, append(devs, Deviation{Location: loc, SpecRef: lay.eventListRef, Severity: SeverityError,
+		return ps, append(devs, Deviation{Location: loc, SpecRef: mf.eventListRef(), Severity: SeverityError,
 			Message: fmt.Sprintf("reading event list: %v", err)})
 	}
 	st, edevs := mf.parseTimeline(data)
@@ -237,16 +201,15 @@ func extractCDSong(img cdSource, mf machineFormat, g songGroup, number int, ndev
 // never resolving or decoding a take. It is the single list path both machines
 // share.
 func listCD(img cdSource, mf machineFormat) ([]SongInfo, []Deviation) {
-	lay := mf.layout()
-	files, devs, err := walkCD(img, lay)
+	files, devs, err := walkCD(img, mf)
 	if err != nil {
 		devs = append(devs, Deviation{Location: "disc", SpecRef: "§5.4", Severity: SeverityError,
 			Message: fmt.Sprintf("walking archive: %v", err)})
 		return nil, devs
 	}
 	var songs []SongInfo
-	for i, g := range lay.group(files) {
-		number, ndevs := lay.songNumber(img, g, i)
+	for i, g := range mf.group(files) {
+		number, ndevs := mf.songNumber(img, g, i)
 		key := cdSongKey(number)
 		info, sdevs := summarizeCDSong(img, mf, g, number, key, ndevs)
 		devs = append(devs, sdevs...)

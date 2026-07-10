@@ -153,33 +153,33 @@ const vr5Origin = 0
 // V-track table (§6.1), replayed at origin 0 (§3), carrying user track names.
 type vr5 struct{}
 
-// layout supplies the VS-1880 CD archive layout (§5.4/§5.5) the shared chain walk
-// runs on: a header validated by the `60 BF 51 28` magic at +0x245C (check 3,
-// which also rejects VR5's markerless song-boundary blocks), a block count
-// derived from the file size, and songs grouped by the header song name with the
-// catalog number resolved from each song's SONG file.
-func (vr5) layout() cdLayout {
-	return cdLayout{
-		machineName:    "VR5",
-		sig:            sigVR5,
-		nameOff:        vr5OffFilename,
-		headerSpan:     vr5HeaderSpan,
-		identityFields: vr5IdentityFields,
-		eventListRef:   "§6.1",
-		accept: func(hdr []byte) bool {
-			// check 3: the constant magic marks a genuine VR5 file header; a
-			// boundary block's stale per-file area fails it.
-			return string(hdr[vr5OffMagic:vr5OffMagic+4]) == string(vr5Magic)
-		},
-		parse:  parseVR5Header,
-		blocks: vr5BlockCount,
-		group:  groupVR5Songs,
-		songNumber: func(img cdSource, g songGroup, index int) (int, []Deviation) {
-			// VR5 headers carry no source SONG number; it is read from the
-			// song's SONG file (§4.4), falling back to walk order.
-			return vr5SongNumber(img, g.files, index)
-		},
-	}
+// The VS-1880 CD archive layout (§5.4/§5.5) the shared chain walk runs on: a
+// header validated by the `60 BF 51 28` magic at +0x245C (check 3, which also
+// rejects VR5's markerless song-boundary blocks), a block count derived from the
+// file size, and songs grouped by the header song name with the catalog number
+// resolved from each song's SONG file. Each method is one piece of the cdLayout
+// seam, so the compiler enforces that vr5 supplies them all.
+
+func (vr5) machineName() string                     { return "VR5" }
+func (vr5) sig() string                             { return sigVR5 }
+func (vr5) nameOff() int                            { return vr5OffFilename }
+func (vr5) headerSpan() int                         { return vr5HeaderSpan }
+func (vr5) identityFields() [][2]int                { return vr5IdentityFields }
+func (vr5) eventListRef() string                    { return "§6.1" }
+func (vr5) parse(hdr []byte, udoff int64) fileEntry { return parseVR5Header(hdr, udoff) }
+func (vr5) blocks(hdr []byte, fe fileEntry) int64   { return vr5BlockCount(hdr, fe) }
+func (vr5) group(files []fileEntry) []songGroup     { return groupVR5Songs(files) }
+
+// accept is the VR5 §5.5 gate (check 3): the constant magic marks a genuine VR5
+// file header; a boundary block's stale per-file area fails it.
+func (vr5) accept(hdr []byte) bool {
+	return string(hdr[vr5OffMagic:vr5OffMagic+4]) == string(vr5Magic)
+}
+
+// songNumber resolves the catalog number from the song's SONG file (§4.4): VR5
+// headers carry no source SONG number, so it falls back to walk order.
+func (vr5) songNumber(img cdSource, g songGroup, index int) (int, []Deviation) {
+	return vr5SongNumber(img, g.files, index)
 }
 
 // parseTimeline reduces a VS-1880 V-track table (§6.1) to a machine-neutral
