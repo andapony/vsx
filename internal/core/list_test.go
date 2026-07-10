@@ -3,11 +3,21 @@ package core
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	"github.com/andapony/vsx/internal/vsfix"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestSongInfoDuration verifies SongInfo renders its own timeline length as a
+// duration through the samples-per-frame framing (issue #27, seam 2), so the CLI
+// no longer hardcodes that constant. 500 frames × 16 samples ÷ 8000 Hz = 1s.
+func TestSongInfoDuration(t *testing.T) {
+	assert.Equal(t, time.Second, SongInfo{Frames: 500, SampleRate: 8000}.Duration())
+	// A zero rate is a defined zero duration, not a divide-by-zero panic.
+	assert.Zero(t, SongInfo{Frames: 100, SampleRate: 0}.Duration())
+}
 
 // twoSongVR9 builds a synthetic 2-song VR9 CD disc (songs numbered 1 and 2),
 // each with one populated v-track, as an in-memory dump.

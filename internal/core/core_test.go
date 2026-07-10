@@ -91,3 +91,64 @@ func TestExtractEmptyArchiveIsSafe(t *testing.T) {
 	}
 	assert.Empty(t, r.Deviations())
 }
+
+// TestSeverityString verifies each Severity renders a stable lowercase word, so
+// the one shared Deviation rendering can show it (issue #27, seam 1).
+func TestSeverityString(t *testing.T) {
+	assert.Equal(t, "info", SeverityInfo.String())
+	assert.Equal(t, "warning", SeverityWarning.String())
+	assert.Equal(t, "error", SeverityError.String())
+}
+
+// TestDeviationStringRendersSeverityAndSpecRef verifies the shared Deviation
+// String form carries the Severity core computes (never shown before issue #27)
+// alongside the spec clause, location, and message, in one line the CLI can
+// print at every site.
+func TestDeviationStringRendersSeverityAndSpecRef(t *testing.T) {
+	d := Deviation{Location: "song 3 / v-track 12", SpecRef: "§5.5",
+		Severity: SeverityError, Message: "referenced take is absent"}
+	assert.Equal(t, "deviation [error §5.5] song 3 / v-track 12: referenced take is absent", d.String())
+}
+
+// TestDeviationStringOmitsBlankSpecRef verifies a deviation with no spec clause
+// (a request-level departure such as an unknown --song key) still renders
+// cleanly, with the severity but no dangling bracket space.
+func TestDeviationStringOmitsBlankSpecRef(t *testing.T) {
+	d := Deviation{Location: "song selection", Severity: SeverityWarning,
+		Message: "no song 9 on this source"}
+	assert.Equal(t, "deviation [warning] song selection: no song 9 on this source", d.String())
+}
+
+// TestUnknownSongKeyYieldsDeviation verifies that a --song key matching no song
+// on the Source surfaces as a warning deviation from the single extraction walk
+// (issue #27, seam 3) — no separate enumeration pass — naming the key and
+// pointing at --list. It matches no song, so nothing is extracted.
+func TestUnknownSongKeyYieldsDeviation(t *testing.T) {
+	raw := twoSongVR9()
+	r, err := extractReader(bytes.NewReader(raw), int64(len(raw)), silentDecoder{},
+		Options{Songs: []SongKey{{Partition: 0, Ordinal: 9}}})
+	require.NoError(t, err)
+	tracks, devs := collectTracks(t, r)
+	assert.Empty(t, tracks, "an unknown key matches no song")
+	require.Len(t, devs, 1)
+	assert.Contains(t, devs[0].Message, "no song 9")
+	assert.Contains(t, devs[0].Message, "--list")
+	assert.Equal(t, SeverityWarning, devs[0].Severity)
+	// A request-level departure carries no spec clause, so it renders with a
+	// bare severity — not with the flag name inside the brackets.
+	assert.Empty(t, devs[0].SpecRef)
+	assert.Equal(t, "deviation [warning] song selection: "+
+		"no song 9 on this source; run 'vsx --list' to see available songs", devs[0].String())
+}
+
+// TestKnownSongKeyYieldsNoUnknownDeviation verifies the mirror: a valid
+// selection extracts its song and adds no unknown-key deviation.
+func TestKnownSongKeyYieldsNoUnknownDeviation(t *testing.T) {
+	raw := twoSongVR9()
+	r, err := extractReader(bytes.NewReader(raw), int64(len(raw)), silentDecoder{},
+		Options{Songs: []SongKey{{Partition: 0, Ordinal: 2}}})
+	require.NoError(t, err)
+	tracks, devs := collectTracks(t, r)
+	require.Len(t, tracks, 1)
+	assert.Empty(t, devs, "a valid selection adds no deviation")
+}

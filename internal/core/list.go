@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/andapony/vsx/internal/hdd"
 )
@@ -17,7 +18,19 @@ type SongInfo struct {
 	Machine      string // "VR5" / "VR9"
 	VTracks      int    // populated v-track count
 	Frames       int    // timeline length in frames
-	SampleRate   int    // for rendering Frames as m:ss
+	SampleRate   int    // native sample rate in Hz, the divisor Duration uses
+}
+
+// Duration is the song's timeline length as a wall-clock duration, applying the
+// private samples-per-frame framing (§3) so the command layer never has to know
+// that constant to render a song length (issue #27, seam 2). A zero or negative
+// sample rate yields a zero duration rather than a divide-by-zero.
+func (s SongInfo) Duration() time.Duration {
+	if s.SampleRate <= 0 {
+		return 0
+	}
+	samples := time.Duration(s.Frames) * samplesPerFrame
+	return samples * time.Second / time.Duration(s.SampleRate)
 }
 
 // List enumerates a Source's songs without decoding audio. It is the thin path
@@ -122,9 +135,9 @@ func listSetReader(discs []discInput, opts Options) ([]SongInfo, []Deviation, er
 // timeline length in frames from its parsed songTimeline — the same neutral
 // timeline the extractor's buildTracks consumes, and through the same vtrackStats
 // rule buildVTrack applies, so List and Extract agree by construction rather than
-// by two loops kept in sync. It reports frames rather than samples (the caller
-// renders a duration as frames*samplesPerFrame/sampleRate) and never touches a
-// take's audio, so no Decoder is needed to answer either question.
+// by two loops kept in sync. It reports frames rather than samples (SongInfo.Duration
+// applies the samples-per-frame framing) and never touches a take's audio, so no
+// Decoder is needed to answer either question.
 func summarizeVTracks(st songTimeline) (vtracks, frames int) {
 	for _, g := range st.groups {
 		hasAudio, endFrame := vtrackStats(g, st.origin)
