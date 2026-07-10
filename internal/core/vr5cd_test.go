@@ -121,7 +121,7 @@ func TestWalkVR5EnumeratesFiles(t *testing.T) {
 	}
 	img := imageOf(t, disc.BuildRaw())
 
-	files, devs, err := walkCD(img, vr5{}.layout())
+	files, devs, err := walkCD(img, vr5{})
 	require.NoError(t, err)
 	assert.Empty(t, devs, "a well-formed disc walks without deviations")
 
