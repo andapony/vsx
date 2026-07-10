@@ -52,6 +52,23 @@ type parsedSong struct {
 	st      songTimeline
 }
 
+// songInfo reduces a parsed song to the catalog entry List reports: identity,
+// machine tag, and sample rate straight from the parse, plus the populated
+// v-track count and frame length from the neutral timeline. Both the HDD and CD
+// summarizers build their SongInfo through this one reduction, so the
+// parsedSong → SongInfo mapping lives in a single place.
+func (ps parsedSong) songInfo() SongInfo {
+	info := SongInfo{
+		Key:          ps.ref.Key,
+		StoredNumber: ps.ref.Number,
+		Name:         ps.ref.Name,
+		Machine:      ps.machine,
+		SampleRate:   ps.aud.sampleRate,
+	}
+	info.VTracks, info.Frames = summarizeVTracks(ps.st)
+	return info
+}
+
 // formatFor resolves a detected machine identity to its behavior adapter — the
 // single dispatch point replacing the per-call switch. It returns nil for an
 // unidentified machine, so callers surface the "unsupported machine" deviation
