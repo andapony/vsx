@@ -1,14 +1,11 @@
 package core
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/andapony/vsx/internal/hddfix"
 	"github.com/andapony/vsx/internal/vsfix"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestHDDListExtractAgreeOnPrologueDeviations pins the prologue half of the
@@ -25,11 +22,10 @@ func TestHDDListExtractAgreeOnPrologueDeviations(t *testing.T) {
 		Rate:          0x05, // low nibble ≥ 5 ⇒ unknown rate (§3) deviation
 		OmitEventList: true, // ⇒ "no EVENTLST" (§4.3) deviation
 	}}}}}
-	path := filepath.Join(t.TempDir(), "defective.img")
-	require.NoError(t, os.WriteFile(path, disk.Build(), 0o644))
+	raw := disk.Build()
 
-	listDevs := listDeviations(t, path)
-	extractDevs := extractDeviations(t, path)
+	listDevs := listDeviations(t, raw)
+	extractDevs := extractDeviations(t, raw)
 
 	assert.Equal(t, listDevs, extractDevs,
 		"List and Extract report the same prologue deviations for the same defective song")
@@ -50,32 +46,28 @@ func TestCDListExtractAgreeOnPrologueDeviations(t *testing.T) {
 			OmitEventList: true,
 		}},
 	}
-	path := filepath.Join(t.TempDir(), "noevl.bin")
-	require.NoError(t, os.WriteFile(path, disc.BuildRaw(), 0o644))
+	raw := disc.BuildRaw()
 
-	listDevs := listDeviations(t, path)
-	extractDevs := extractDeviations(t, path)
+	listDevs := listDeviations(t, raw)
+	extractDevs := extractDeviations(t, raw)
 
 	assert.Equal(t, listDevs, extractDevs,
 		"List and Extract report the same prologue deviations for the same defective CD song")
 	assert.Len(t, listDevs, 1, "the no-event-list deviation is reported")
 }
 
-// listDeviations runs List over a source and returns its deviations.
-func listDeviations(t *testing.T, path string) []Deviation {
+// listDeviations lists an in-memory source and returns its deviations.
+func listDeviations(t *testing.T, raw []byte) []Deviation {
 	t.Helper()
-	_, devs, err := List(path, Options{})
-	require.NoError(t, err)
+	_, devs := mustListBytes(t, raw, Options{})
 	return devs
 }
 
-// extractDeviations fully consumes an Extract over a source and returns its
+// extractDeviations fully consumes an in-memory extraction and returns its
 // deviations (available only once the track iterator is drained).
-func extractDeviations(t *testing.T, path string) []Deviation {
+func extractDeviations(t *testing.T, raw []byte) []Deviation {
 	t.Helper()
-	r, err := Extract(path, Options{})
-	require.NoError(t, err)
-	_, devs := collectTracks(t, r)
+	_, devs := collectTracks(t, mustExtractBytes(t, raw, Options{}))
 	return devs
 }
 

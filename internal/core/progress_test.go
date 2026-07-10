@@ -1,14 +1,22 @@
 package core
 
 import (
-	"os"
-	"path/filepath"
+	"bytes"
 	"testing"
 
 	"github.com/andapony/vsx/internal/vsfix"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// extractProgress drives an in-memory extraction with a fake decoder (progress
+// is an enumeration concern, so no codec is needed) and returns the Result.
+func extractProgress(t *testing.T, raw []byte, opts Options) Result {
+	t.Helper()
+	r, err := extractReader(bytes.NewReader(raw), int64(len(raw)), silentDecoder{}, opts)
+	require.NoError(t, err)
+	return r
+}
 
 // TestExtractReportsProgress verifies the Options.Progress callback: an
 // extraction reports an identifying phase, then one extracting milestone per
@@ -24,12 +32,8 @@ func TestExtractReportsProgress(t *testing.T) {
 				Events: []vsfix.Event{{Start: 12, End: 16, FileID: 0x0200, Track: 1, VTrack: 1}}},
 		},
 	}
-	path := filepath.Join(t.TempDir(), "prog.bin")
-	require.NoError(t, os.WriteFile(path, disc.BuildRaw(), 0o644))
-
 	var events []Progress
-	r, err := Extract(path, Options{Progress: func(p Progress) { events = append(events, p) }})
-	require.NoError(t, err)
+	r := extractProgress(t, disc.BuildRaw(), Options{Progress: func(p Progress) { events = append(events, p) }})
 	collectTracks(t, r) // drain the stream so all progress fires
 
 	require.NotEmpty(t, events)
@@ -53,22 +57,16 @@ func TestExtractReportsProgress(t *testing.T) {
 // TestExtractProgressNilIsSafe verifies extraction is unaffected when no
 // Progress callback is supplied (the default).
 func TestExtractProgressNilIsSafe(t *testing.T) {
-	src := writeProgressDisc(t)
-	r, err := Extract(src, Options{})
-	require.NoError(t, err)
-	tracks, _ := collectTracks(t, r)
+	tracks, _ := collectTracks(t, extractProgress(t, progressDisc(), Options{}))
 	assert.NotEmpty(t, tracks)
 }
 
-func writeProgressDisc(t *testing.T) string {
-	t.Helper()
+func progressDisc() []byte {
 	disc := vsfix.Disc{
 		SetID: [4]byte{1, 2, 3, 4},
 		Songs: []vsfix.Song{{Number: 1, Name: "ONE",
 			Takes:  []vsfix.Take{{FileID: 0x0100, Name: "TAKE0100", MT2: silentMT2(4)}},
 			Events: []vsfix.Event{{Start: 12, End: 16, FileID: 0x0100, Track: 1, VTrack: 1}}}},
 	}
-	path := filepath.Join(t.TempDir(), "p.bin")
-	require.NoError(t, os.WriteFile(path, disc.BuildRaw(), 0o644))
-	return path
+	return disc.BuildRaw()
 }

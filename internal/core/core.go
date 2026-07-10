@@ -9,6 +9,7 @@ package core
 
 import (
 	"fmt"
+	"io"
 	"iter"
 	"os"
 
@@ -198,14 +199,15 @@ func (r Result) Deviations() []Deviation {
 	return *r.deviations
 }
 
-// sourceHandle is the outcome of identifying a single-file Source (a directory
-// is a backup set instead, handled separately by openBackupSet): the opened
-// file plus, on the HDD path, the opened Volume, or on the CD path, the
-// detected Image and machine. identifySource is the single place that decides
-// HDD-vs-CD and, on CD, the machine — Extract and List both call it so the
-// identify/dispatch order can never drift between them.
-type sourceHandle struct {
-	f       *os.File
+// identifiedSource is the outcome of identifying a single Source from its bytes
+// (a directory is a backup set instead, handled separately by openBackupSet):
+// on the HDD path the opened Volume, or on the CD path the detected Image and
+// machine. identifyReader is the single place that decides HDD-vs-CD and, on CD,
+// the machine — extractReader and listReader both call it so the identify/
+// dispatch order can never drift between them. It holds no file handle: the
+// caller (a path adapter over an *os.File, or a test over a bytes.Reader) owns
+// the underlying read surface's lifetime.
+type identifiedSource struct {
 	isHDD   bool
 	vol     *hdd.Volume
 	img     *cd.Image
@@ -213,17 +215,11 @@ type sourceHandle struct {
 	cooked  bool // CD path only: a cooked (dd) rip (§5/§10)
 }
 
-// identifySource opens sourcePath (a single file) and identifies it exactly as
-// the former Extract prologue did: the HDD live-disk check first (unless --as
-// forces the CD path), then CD archive detection. The returned handle's file
-// is open on success and the caller owns closing it; on error the file (if
-// opened) is already closed.
-func identifySource(sourcePath string, info os.FileInfo, opts Options) (sourceHandle, error) {
-	f, err := os.Open(sourcePath)
-	if err != nil {
-		return sourceHandle{}, fmt.Errorf("core: opening source: %w", err)
-	}
-
+// identifyReader identifies a single Source from a random-access read surface and
+// its length, exactly as the former path prologue did: the HDD live-disk check
+// first (unless --as forces the CD path), then CD archive detection. It reads
+// but does not own r — it opens and closes nothing.
+func identifyReader(r io.ReaderAt, size int64, opts Options) (identifiedSource, error) {
 	// HDD path (§4): a Roland live disk is identified structurally — its MBR and
 	// a partition BPB's "Roland  " OEM ID — before the CD signature check, since
 	// an HDD image carries no CD archive signature at user-data offset 0.
@@ -233,46 +229,44 @@ func identifySource(sourcePath string, info os.FileInfo, opts Options) (sourceHa
 	forceHDD := opts.As.kind == kindHDD
 	forceCD := opts.As.kind == kindCD
 	if forceHDD || !forceCD {
-		vol, herr := hdd.Open(f, info.Size())
+		vol, herr := hdd.Open(r, size)
 		if herr == nil {
-			return sourceHandle{f: f, isHDD: true, vol: vol}, nil
+			return identifiedSource{isHDD: true, vol: vol}, nil
 		}
 		if forceHDD {
-			f.Close()
-			return sourceHandle{}, fmt.Errorf("core: --as=hdd forced but this image is not a Roland live disk: %w", herr)
+			return identifiedSource{}, fmt.Errorf("core: --as=hdd forced but this image is not a Roland live disk: %w", herr)
 		}
 		// autodetect, not a Roland disk: fall through to the CD path.
 	}
 
-	img, err := cd.New(f, info.Size())
+	img, err := cd.New(r, size)
 	if err != nil {
-		f.Close()
-		return sourceHandle{}, fmt.Errorf("core: %w", err)
+		return identifiedSource{}, fmt.Errorf("core: %w", err)
 	}
 
 	// The machine override ("vr9"/"vr5") forces the machine when no signature is
 	// present; kindCD alone ("cd") leaves the machine to signature autodetection.
 	p, err := detect(img, opts.As.machine)
 	if err != nil {
-		f.Close()
-		return sourceHandle{}, err
+		return identifiedSource{}, err
 	}
 	if p.kind != kindCD {
 		// Defensive: the HDD path is taken above and detect only ever identifies
 		// a CD archive here, so a non-CD kind at this point is unexpected.
-		f.Close()
-		return sourceHandle{}, fmt.Errorf("core: unexpected non-CD source kind after CD detection; machine=%v", p.machine)
+		return identifiedSource{}, fmt.Errorf("core: unexpected non-CD source kind after CD detection; machine=%v", p.machine)
 	}
 
-	return sourceHandle{f: f, img: img, machine: p.machine, cooked: img.Cooked()}, nil
+	return identifiedSource{img: img, machine: p.machine, cooked: img.Cooked()}, nil
 }
 
 // Extract opens the Source at sourcePath, identifies it, and returns a streaming
 // Result. It handles every Source this build supports: HDD live-disk images
 // (§4), single-disc CD Song Copy Archives, and multi-disc CD backup sets (a
 // directory, §5.6), for both machines — the VS-880EX (VR9) and the VS-1880
-// (VR5). The Source file(s) stay open for the lifetime of the track iterator and
-// are closed when iteration ends.
+// (VR5). It is the thin path adapter over extractReader: it opens the file(s),
+// delegates the byte-level walk with the production Decoder, and keeps the
+// Source file(s) open for the lifetime of the track iterator, closing them when
+// iteration ends.
 func Extract(sourcePath string, opts Options) (Result, error) {
 	info, err := os.Stat(sourcePath)
 	if err != nil {
@@ -287,37 +281,58 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 		}
 		return extractSet(paths, opts)
 	}
+
+	f, err := os.Open(sourcePath)
+	if err != nil {
+		return Result{}, fmt.Errorf("core: opening source: %w", err)
+	}
+	res, err := extractReader(f, info.Size(), NewDecoder(), opts)
+	if err != nil {
+		f.Close()
+		return Result{}, err
+	}
+	// The file stays open for the whole lazy walk (PCM is read on demand) and is
+	// closed when iteration ends.
+	return Result{tracks: streamClosing(f, res.tracks), deviations: res.deviations}, nil
+}
+
+// extractReader is the ReaderAt entry the path API sits on: it identifies a
+// single Source from its bytes and streams it, decoding takes through the
+// supplied Decoder (the production one on the path API, a fake in tests). It
+// owns no handle and closes nothing — the caller keeps r alive for the lazy walk
+// — so the whole extraction runs diskless and codec-free when driven from an
+// in-memory reader with a fake decoder.
+func extractReader(r io.ReaderAt, size int64, dec Decoder, opts Options) (Result, error) {
 	report := progressFn(opts.Progress)
 	report(Progress{Phase: ProgressIdentifying})
 
-	h, err := identifySource(sourcePath, info, opts)
+	id, err := identifyReader(r, size, opts)
 	if err != nil {
 		return Result{}, err
 	}
 	devs := &[]Deviation{}
+	ctx := extractCtx{dec: dec, devs: devs, stereo: opts.Stereo, report: report, songs: opts.Songs}
 
-	if h.isHDD {
-		ctx := extractCtx{dec: NewDecoder(), devs: devs, stereo: opts.Stereo, report: report, songs: opts.Songs}
-		return newHDDResult(h.f, h.vol, ctx)
+	if id.isHDD {
+		inner, err := extractHDD(id.vol, ctx)
+		if err != nil {
+			return Result{}, err
+		}
+		return Result{tracks: inner, deviations: devs}, nil
 	}
 
-	if h.cooked {
+	if id.cooked {
 		*devs = append(*devs, cookedRipDeviation())
 	}
-
-	mf := formatFor(h.machine)
+	mf := formatFor(id.machine)
 	if mf == nil {
-		h.f.Close()
-		return Result{}, fmt.Errorf("core: source identified but not yet supported by this build; machine=%v", h.machine)
+		return Result{}, fmt.Errorf("core: source identified but not yet supported by this build; machine=%v", id.machine)
 	}
-	ctx := extractCtx{dec: NewDecoder(), devs: devs, stereo: opts.Stereo, report: report, songs: opts.Songs}
-	inner, err := extractCD(h.img, mf, ctx)
+	inner, err := extractCD(id.img, mf, ctx)
 	if err != nil {
-		h.f.Close()
 		return Result{}, err
 	}
-
-	return Result{tracks: streamClosing(h.f, inner), deviations: devs}, nil
+	return Result{tracks: inner, deviations: devs}, nil
 }
 
 // ExtractSet treats the given disc-image files as one multi-disc CD backup set
@@ -325,21 +340,29 @@ func Extract(sourcePath string, opts Options) (Result, error) {
 // audio. Use it when the discs are passed as separate paths rather than a folder.
 func ExtractSet(paths []string, opts Options) (Result, error) { return extractSet(paths, opts) }
 
-// extractSet groups a list of CD dump files into one multi-disc backup set
-// (§5.6) and streams its audio. Grouping deviations (foreign files, missing
-// discs) are present immediately; the machine-specific walk then runs over the
-// stitched reader exactly as it does for a single disc. The set's disc files
-// stay open for the lifetime of the track iterator and are all closed when it
-// ends. A CD backup set can only be a CD source, so --as=hdd is a usage error
-// here.
+// extractSet is the path adapter for a multi-disc backup set: it opens each disc
+// file into a byte input and delegates to extractSetReader with the production
+// Decoder.
 func extractSet(paths []string, opts Options) (Result, error) {
+	return extractSetReader(discInputsFromPaths(paths), NewDecoder(), opts)
+}
+
+// extractSetReader groups disc byte-inputs into one multi-disc backup set (§5.6)
+// and streams its audio through the supplied Decoder. Grouping deviations
+// (foreign files, missing discs) are present immediately; the machine-specific
+// walk then runs over the stitched reader exactly as it does for a single disc.
+// The chosen set's inputs stay open for the lifetime of the track iterator and
+// are all closed when it ends. A CD backup set can only be a CD source, so
+// --as=hdd is a usage error here; the discs are closed before it returns.
+func extractSetReader(discs []discInput, dec Decoder, opts Options) (Result, error) {
 	if opts.As.kind == kindHDD {
-		return Result{}, fmt.Errorf("core: --as=hdd is not valid for a multi-disc CD backup set (an HDD source is a single image)")
+		closeInputs(discs)
+		return Result{}, errHDDBackupSet()
 	}
 	report := progressFn(opts.Progress)
 	report(Progress{Phase: ProgressIdentifying})
 
-	set, err := openBackupSet(paths, opts)
+	set, err := openBackupSet(discs, opts)
 	if err != nil {
 		return Result{}, err
 	}
@@ -351,54 +374,42 @@ func extractSet(paths []string, opts Options) (Result, error) {
 
 	mf := formatFor(set.machine)
 	if mf == nil {
-		closeAll(set.files)
+		closeInputs(set.discs)
 		return Result{}, fmt.Errorf("core: backup set machine not supported by this build; machine=%v", set.machine)
 	}
-	ctx := extractCtx{dec: NewDecoder(), devs: devs, stereo: opts.Stereo, report: report, songs: opts.Songs}
+	ctx := extractCtx{dec: dec, devs: devs, stereo: opts.Stereo, report: report, songs: opts.Songs}
 	inner, err := extractCD(set.reader, mf, ctx)
 	if err != nil {
-		closeAll(set.files)
+		closeInputs(set.discs)
 		return Result{}, err
 	}
-	return Result{tracks: streamClosingAll(set.files, inner), deviations: devs}, nil
+	return Result{tracks: streamClosingInputs(set.discs, inner), deviations: devs}, nil
 }
 
-// newHDDResult builds a streaming Result over a Roland live disk, keeping the
-// Source file open for the lifetime of the track iterator and closing it when
-// iteration ends — the same ownership contract as the CD path.
-func newHDDResult(f *os.File, vol *hdd.Volume, ctx extractCtx) (Result, error) {
-	inner, err := extractHDD(vol, ctx)
-	if err != nil {
-		f.Close()
-		return Result{}, err
-	}
-	return Result{tracks: streamClosing(f, inner), deviations: ctx.devs}, nil
+// errHDDBackupSet is the usage error both set entries raise for --as=hdd: an HDD
+// source is a single image, never a multi-disc CD backup set.
+func errHDDBackupSet() error {
+	return fmt.Errorf("core: --as=hdd is not valid for a multi-disc CD backup set (an HDD source is a single image)")
 }
 
-// streamClosing wraps a per-track iterator so the Source file is closed once
-// iteration ends (whether drained or abandoned early) — the file must stay open
-// for the whole lazy walk, since PCM is read on demand.
+// streamClosing wraps a per-track iterator so the single Source file is closed
+// once iteration ends (whether drained or abandoned early) — the file must stay
+// open for the whole lazy walk, since PCM is read on demand. It is the one-file
+// case of streamClosingInputs.
 func streamClosing(f *os.File, inner iter.Seq2[TrackResult, error]) iter.Seq2[TrackResult, error] {
-	return streamClosingAll([]*os.File{f}, inner)
+	return streamClosingInputs([]discInput{{close: func() { f.Close() }}}, inner)
 }
 
-// streamClosingAll is streamClosing for a multi-disc set: it closes every disc
-// file once iteration ends. All disc files must stay open for the whole lazy
-// walk, since a spanned take reads across discs on demand.
-func streamClosingAll(files []*os.File, inner iter.Seq2[TrackResult, error]) iter.Seq2[TrackResult, error] {
+// streamClosingInputs closes every disc input once iteration ends. All inputs
+// must stay open for the whole lazy walk, since a spanned take reads across
+// discs on demand.
+func streamClosingInputs(discs []discInput, inner iter.Seq2[TrackResult, error]) iter.Seq2[TrackResult, error] {
 	return func(yield func(TrackResult, error) bool) {
-		defer closeAll(files)
+		defer closeInputs(discs)
 		for tr, e := range inner {
 			if !yield(tr, e) {
 				return
 			}
 		}
-	}
-}
-
-// closeAll closes every file handle, ignoring errors (best effort on teardown).
-func closeAll(files []*os.File) {
-	for _, f := range files {
-		f.Close()
 	}
 }

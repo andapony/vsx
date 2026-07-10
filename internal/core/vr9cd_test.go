@@ -1,8 +1,6 @@
 package core
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -49,12 +47,7 @@ func TestExtractFlagSetRecordWritesAudio(t *testing.T) {
 			},
 		}},
 	}
-	path := filepath.Join(t.TempDir(), "flag.bin")
-	require.NoError(t, os.WriteFile(path, disc.BuildRaw(), 0o644))
-
-	r, err := Extract(path, Options{})
-	require.NoError(t, err)
-	tracks, _ := collectTracks(t, r)
+	tracks, _ := collectTracks(t, mustExtractBytes(t, disc.BuildRaw(), Options{}))
 
 	require.Len(t, tracks, 1, "the flag=1 record's v-track is emitted")
 	assert.True(t, anyNonZero(tracks[0].PCM.Samples), "flag=1 with a real take writes audio, not silence")
@@ -91,12 +84,7 @@ func TestUnimplementedCodecPatternInOutputIsReported(t *testing.T) {
 			Events: []vsfix.Event{{Start: 12, End: 20, FileID: 0x0100, Track: 1, VTrack: 1}},
 		}},
 	}
-	path := filepath.Join(t.TempDir(), "unknown.bin")
-	require.NoError(t, os.WriteFile(path, disc.BuildRaw(), 0o644))
-
-	r, err := Extract(path, Options{})
-	require.NoError(t, err)
-	tracks, devs := collectTracks(t, r)
+	tracks, devs := collectTracks(t, mustExtractBytes(t, disc.BuildRaw(), Options{}))
 
 	require.Len(t, tracks, 1, "the take still yields a v-track")
 	found := hasUnknownDeviation(devs)
@@ -123,12 +111,7 @@ func TestUnimplementedCodecPatternInUnusedTailIsNotReported(t *testing.T) {
 			Events: []vsfix.Event{{Start: 12, End: 16, FileID: 0x0100, Track: 1, VTrack: 1}},
 		}},
 	}
-	path := filepath.Join(t.TempDir(), "tail.bin")
-	require.NoError(t, os.WriteFile(path, disc.BuildRaw(), 0o644))
-
-	r, err := Extract(path, Options{})
-	require.NoError(t, err)
-	tracks, devs := collectTracks(t, r)
+	tracks, devs := collectTracks(t, mustExtractBytes(t, disc.BuildRaw(), Options{}))
 
 	require.Len(t, tracks, 1, "the used (implemented-pattern) region still yields a v-track")
 	assert.Nil(t, hasUnknownDeviation(devs),
@@ -156,12 +139,7 @@ func TestExtractVR9EndToEnd(t *testing.T) {
 			},
 		}},
 	}
-	path := filepath.Join(t.TempDir(), "vr9.bin")
-	require.NoError(t, os.WriteFile(path, disc.BuildRaw(), 0o644))
-
-	r, err := Extract(path, Options{})
-	require.NoError(t, err)
-	tracks, devs := collectTracks(t, r)
+	tracks, devs := collectTracks(t, mustExtractBytes(t, disc.BuildRaw(), Options{}))
 
 	require.Len(t, tracks, 2)
 
