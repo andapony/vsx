@@ -57,6 +57,10 @@ type Song struct {
 	Name   string
 	Events []Event
 	Takes  []Take
+	// OmitEventList drops the EVENTLST file from the song's on-disc files (§5.4),
+	// the "no event list found; nothing to extract" deviation both List and
+	// Extract must report.
+	OmitEventList bool
 }
 
 // Disc describes a single-disc, index-0 VR9 archive to synthesize.
@@ -127,7 +131,10 @@ type file struct {
 // files returns a song's on-disc files in source-directory order: the event
 // list first, then the takes.
 func (s Song) files() []file {
-	fs := []file{{name: "EVENTLSTVR9", fileID: 0, data: s.eventLog()}}
+	var fs []file
+	if !s.OmitEventList {
+		fs = append(fs, file{name: "EVENTLSTVR9", fileID: 0, data: s.eventLog()})
+	}
 	for _, t := range s.Takes {
 		fs = append(fs, file{name: pad8(t.Name) + "VR9", fileID: t.FileID, data: t.MT2})
 	}
