@@ -273,16 +273,52 @@ func linkSetDir(t *testing.T, g discGroup) string {
 	return dir
 }
 
+// discsMissingFiller and setsWithForeignSpan record the corpus's *known-imperfect*
+// rips: dumps that are genuinely truncated or a genuinely foreign/mis-ordered
+// continuation disc, so the extractor is behaving correctly (ADR-0002 best-effort)
+// when it flags them. The multi-disc test below asserts each listed deviation
+// *is* present for exactly its entry and *absent* everywhere else, so a new
+// clean-corpus regression still fails the test while a known-bad rip is an
+// expected condition rather than a failure (issue #24). Each entry says *why*
+// it is imperfect; if a future re-rip makes an entry pristine the "expected
+// imperfect" assertion trips, which is the signal to delete it here.
+//
+// Note on the filename oddities the issue flagged as suspects: vs-cd-6a + vs-cd-6c
+// (set c51208e2) and vs-cd-9 + vs-cd-10b (set 76c5075e) are *complete* two-disc
+// sets — the discs carry §5.2 indices 0 and 1 regardless of the letters in their
+// filenames — so they span cleanly and are deliberately NOT listed here; asserting
+// them clean is the correct expectation.
+
+// discsMissingFiller are corpus discs with no trailing §10 TDI filler run:
+// truncated/incomplete dumps whose data end the walk correctly falls back to
+// end-of-data for (with a warning). Keyed by basename.
+var discsMissingFiller = map[string]string{
+	"vs-cd-7a.bin": "truncated dump (disc 0 of set c53305e5); no trailing §10 TDI filler run",
+	"vs-cd-8.bin":  "truncated dump (disc 0 of set f9b305d5); no trailing §10 TDI filler run",
+}
+
+// setsWithForeignSpan are corpus backup sets whose continuation disc's block-0
+// header does not repeat a spanned file's header (§5.6): a genuinely foreign or
+// mis-ordered continuation disc, exactly the condition §5.6 verification exists
+// to flag. Keyed by setIDString(g.setID) output (the "set <hex>" form), so the
+// lookup key is the exact string the extractor uses in its deviation messages.
+var setsWithForeignSpan = map[string]string{
+	"set c53305e5": "continuation disc vs-cd-7b.bin does not repeat the spanned file's header (§5.6)",
+	"set f9b305d5": "continuation disc vs-cd-14.bin does not repeat the spanned file's header (§5.6)",
+}
+
 // TestMultiDiscMediaStructuralInvariants runs the extractor against real
 // multi-disc CD backup sets (when VSX_TEST_MEDIA is set) and asserts the §5.6
-// spanning invariants on genuine media. Two things must hold on a complete set:
-// every disc's data end is located by its §10 TDI filler signature (so the
-// junctions are computed against burned-data ends, not dump lengths), and the
-// stitched set extracts every v-track cleanly with no spanning-remainder or
-// missing-disc deviation — which can only happen if each spanned file was
-// reconstructed flush across its junction (byte-exactly). A mis-located boundary
-// or a dropped/duplicated junction byte would corrupt a take and surface here as
-// a decode failure or an out-of-grid v-track.
+// spanning invariants on genuine media. It separates two claims the old test
+// conflated (issue #24): *the extractor behaved correctly* and *the corpus is
+// pristine*. The structural invariants — every emitted v-track sits in its grid,
+// decodes to a real bit depth and rate, and at least one v-track comes out —
+// apply to every set unconditionally. The pristineness checks (every disc ends
+// in a §10 TDI filler run so junctions measure against burned-data ends; every
+// span reconstructs flush with no §5.6 deviation) apply to every set *except*
+// the known-imperfect discs and sets above, for which the deviation is asserted
+// to be present instead — so a mis-located boundary or dropped junction byte on
+// a good rip still surfaces here as a regression.
 func TestMultiDiscMediaStructuralInvariants(t *testing.T) {
 	dir := testutil.RequireMedia(t)
 	sets := findMultiDiscSets(t, dir)
@@ -290,9 +326,11 @@ func TestMultiDiscMediaStructuralInvariants(t *testing.T) {
 		t.Skipf("no multi-disc CD backup sets found under %s", dir)
 	}
 	for _, g := range sets {
-		// Filler signature: every disc of the set ends in a detectable §10 run,
-		// which is what the junction arithmetic is measured against.
+		// Filler signature: a finalized disc ends in a detectable §10 run, which
+		// is what the junction arithmetic is measured against. A known-truncated
+		// dump is expected to lack it; every other disc must have it.
 		for _, p := range g.paths {
+			base := filepath.Base(p)
 			f, err := os.Open(p)
 			require.NoError(t, err)
 			info, err := f.Stat()
@@ -301,7 +339,11 @@ func TestMultiDiscMediaStructuralInvariants(t *testing.T) {
 			require.NoError(t, err)
 			_, ok := img.FillerStart()
 			f.Close()
-			assert.True(t, ok, "%s: a finalized disc ends with a TDI filler run (§10)", filepath.Base(p))
+			if why, imperfect := discsMissingFiller[base]; imperfect {
+				assert.False(t, ok, "%s is a known-imperfect rip (%s); if it now ends in a §10 filler run it was re-ripped clean — remove it from discsMissingFiller", base, why)
+			} else {
+				assert.True(t, ok, "%s: a finalized disc ends with a TDI filler run (§10)", base)
+			}
 		}
 
 		r, err := Extract(linkSetDir(t, g), Options{})
@@ -318,13 +360,27 @@ func TestMultiDiscMediaStructuralInvariants(t *testing.T) {
 			assert.Positive(t, tr.Take.SampleRate)
 		}
 		assert.Positive(t, n, "a multi-disc set extracts at least one v-track")
-		// A complete set reconstructs every span flush: no remainder ran off the
-		// last disc and no disc index was missing.
+
+		// §5.6 spanning: a complete set reconstructs every span flush (no
+		// remainder ran off the last disc, no disc index missing, every junction
+		// header matched). A known foreign/mis-ordered set is expected to raise
+		// exactly this deviation; every other set must not.
+		setID := setIDString(g.setID)
+		_, foreign := setsWithForeignSpan[setID]
+		sawForeignSpan := false
 		for _, d := range r.Deviations() {
-			assert.NotEqual(t, "§5.6", d.SpecRef,
-				"complete set %s spanned cleanly, no §5.6 deviation: %s", setIDString(g.setID), d.Message)
+			if d.SpecRef != "§5.6" {
+				continue
+			}
+			sawForeignSpan = true
+			assert.True(t, foreign,
+				"%s raised an unexpected §5.6 spanning deviation (a clean set spanned wrong, or a new imperfect rip entered the corpus): %s", setID, d.Message)
 		}
-		t.Logf("%s (%d discs): %d v-tracks extracted", setIDString(g.setID), len(g.paths), n)
+		if why, imperfect := setsWithForeignSpan[setID]; imperfect {
+			assert.True(t, sawForeignSpan,
+				"%s is a known foreign/mis-ordered set (%s) and should still raise a §5.6 deviation; if it now spans cleanly it was re-ripped/re-ordered — remove it from setsWithForeignSpan", setID, why)
+		}
+		t.Logf("%s (%d discs): %d v-tracks extracted", setID, len(g.paths), n)
 	}
 }
 
