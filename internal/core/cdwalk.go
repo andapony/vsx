@@ -261,13 +261,5 @@ func listCD(img cdSource, mf machineFormat) ([]SongInfo, []Deviation) {
 // and length by construction. It decodes no take.
 func summarizeCDSong(img cdSource, mf machineFormat, g songGroup, number int, key SongKey, ndevs []Deviation) (SongInfo, []Deviation) {
 	ps, devs := parseCDSong(img, mf, g, number, key, ndevs)
-	info := SongInfo{
-		Key:          ps.ref.Key,
-		StoredNumber: ps.ref.Number,
-		Name:         ps.ref.Name,
-		Machine:      ps.machine,
-		SampleRate:   ps.aud.sampleRate,
-	}
-	info.VTracks, info.Frames = summarizeVTracks(ps.st)
-	return info, devs
+	return ps.songInfo(), devs
 }

@@ -34,7 +34,7 @@ type profile struct {
 	machine machine
 }
 
-// SourceOverride is the typed --as override (Options.As): which respects of
+// SourceOverride is the typed --as override (Options.As): which aspects of
 // byte-level autodetection the caller has forced. Its zero value autodetects
 // everything. It is opaque — built only by ParseAs, read only inside core — so
 // the invalid combinations a bare string allowed (an unknown machine name, a

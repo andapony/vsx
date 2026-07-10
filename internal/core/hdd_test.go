@@ -74,6 +74,31 @@ func writeDisk(t *testing.T, d hddfix.Disk) string {
 	return path
 }
 
+// TestHDDListReportsMachineTagWhenSongHeaderUnreadable pins the shared prologue's
+// "report whatever fields were reached" behaviour: a song whose SONG file is
+// missing fails before its header parses, yet its machine extension is known from
+// the directory entry (§4.3), so List still tags the catalog row with it rather
+// than leaving it blank. This unifies HDD with CD (whose summary always carried
+// the machine tag) and is reported alongside the §4.4 no-SONG deviation.
+func TestHDDListReportsMachineTagWhenSongHeaderUnreadable(t *testing.T) {
+	path := writeDisk(t, hddfix.Disk{Partitions: []hddfix.Partition{{Songs: []hddfix.Song{{
+		Number: 1, Name: "GONE", Ext: "VR9", OmitSong: true,
+	}}}}})
+
+	songs, devs, err := List(path, Options{})
+	require.NoError(t, err)
+	require.Len(t, songs, 1)
+	assert.Equal(t, "VR9", songs[0].Machine, "machine tag comes from the directory extension even when SONG is unreadable")
+	assert.NotEmpty(t, devs, "the missing SONG file is still reported as a deviation")
+
+	// Extract agrees: no tracks, and it reports the same no-SONG deviation.
+	r, err := Extract(path, Options{})
+	require.NoError(t, err)
+	tracks, edevs := collectTracks(t, r)
+	assert.Empty(t, tracks, "a song with no SONG header yields no audio")
+	assert.Equal(t, devs, edevs, "List and Extract report the same deviation for the headerless song")
+}
+
 // m16 encodes samples as uncompressed little-endian 16-bit PCM (format M16, §2),
 // so a take's decoded output is exactly the samples put in — the cleanest way to
 // assert audio end-to-end without a codec round-trip.

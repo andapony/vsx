@@ -71,6 +71,11 @@ type Song struct {
 	// the "no event list; nothing to extract" deviation both List and Extract
 	// must report after the SONG header parses.
 	OmitEventList bool
+	// OmitSong drops the SONG.<ext> file from the directory (§4.4), the "no SONG
+	// file; cannot determine format or rate" deviation reported before the header
+	// is parsed — while the song's machine extension is still known from the
+	// directory entry.
+	OmitSong bool
 }
 
 // Partition is one FAT16 partition of song directories.
@@ -287,8 +292,10 @@ func (b *pbuild) buildSong(s Song) uint16 {
 	)
 
 	// SONG.<ext> and EVENTLST.<ext> (§4.3 fixed names).
-	songFirst := b.store(s.songFile(), 0)
-	entries = append(entries, dirEntry{name8: "SONG", ext3: s.Ext, firstClus: songFirst, size: len(s.songFile())})
+	if !s.OmitSong {
+		songFirst := b.store(s.songFile(), 0)
+		entries = append(entries, dirEntry{name8: "SONG", ext3: s.Ext, firstClus: songFirst, size: len(s.songFile())})
+	}
 
 	if !s.OmitEventList {
 		el := s.eventList()
