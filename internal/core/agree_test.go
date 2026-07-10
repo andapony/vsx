@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/andapony/vsx/internal/hddfix"
+	"github.com/andapony/vsx/internal/vsfix"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,6 +34,31 @@ func TestHDDListExtractAgreeOnPrologueDeviations(t *testing.T) {
 	assert.Equal(t, listDevs, extractDevs,
 		"List and Extract report the same prologue deviations for the same defective song")
 	assert.Len(t, listDevs, 2, "both the unknown-rate and no-event-list deviations are reported")
+}
+
+// TestCDListExtractAgreeOnPrologueDeviations is the CD counterpart: a song with
+// takes but no EVENTLST makes the shared parseCDSong prologue emit the §5.4
+// no-event-list deviation, and List and Extract — both running that one prologue
+// — report the identical set. The song has no parsable timeline, so Extract adds
+// no take/build deviations and the sets compare whole.
+func TestCDListExtractAgreeOnPrologueDeviations(t *testing.T) {
+	disc := vsfix.Disc{
+		SetID: [4]byte{1, 2, 3, 4},
+		Songs: []vsfix.Song{{
+			Number: 1, Name: "NOEVL",
+			Takes:         []vsfix.Take{{FileID: 0x0100, Name: "TAKE0100", MT2: mt2Bytes(0x11, 4)}},
+			OmitEventList: true,
+		}},
+	}
+	path := filepath.Join(t.TempDir(), "noevl.bin")
+	require.NoError(t, os.WriteFile(path, disc.BuildRaw(), 0o644))
+
+	listDevs := listDeviations(t, path)
+	extractDevs := extractDeviations(t, path)
+
+	assert.Equal(t, listDevs, extractDevs,
+		"List and Extract report the same prologue deviations for the same defective CD song")
+	assert.Len(t, listDevs, 1, "the no-event-list deviation is reported")
 }
 
 // listDeviations runs List over a source and returns its deviations.

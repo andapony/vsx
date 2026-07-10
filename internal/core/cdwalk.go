@@ -178,24 +178,29 @@ func extractCD(img cdSource, mf machineFormat, ctx extractCtx) (iter.Seq2[TrackR
 	}, nil
 }
 
-// extractCDSong replays one song's event list against its takes into per-v-track
-// results. number, ndevs, and key are resolved by the caller from the layout's
-// song-number rule before any take is read, so Options.Songs filtering happens
-// ahead of this call; takes are resolved by FileID (§5.7). The parse to a neutral
-// timeline goes through mf, and only the event-list spec clause differs per
-// machine (via the layout), so the replay is otherwise machine-neutral.
-func extractCDSong(img cdSource, mf machineFormat, g songGroup, number int, ndevs []Deviation, key SongKey, dec Decoder, stereo bool) ([]TrackResult, []Deviation) {
-	devs := ndevs
+// parseCDSong runs one CD song's prologue: locate and read its EVENTLST, parse it
+// through mf into the machine-neutral parsedSong both List and Extract consume,
+// and resolve the rate/format from the event-list file header. number, key, and
+// the song-number-resolution deviations (ndevs) are resolved by the caller from
+// the layout's song-number rule before any take is read (so Options.Songs
+// filtering happens ahead of extraction); ndevs lead the returned deviations, in
+// the one canonical order — song number, event list, then rate. A failure leaves
+// the timeline empty with the reason in the deviations. Only the event-list spec
+// clause differs per machine (via the layout); the rest is machine-neutral.
+func parseCDSong(img cdSource, mf machineFormat, g songGroup, number int, key SongKey, ndevs []Deviation) (parsedSong, []Deviation) {
+	lay := mf.layout()
 	loc := fmt.Sprintf("song %d", number)
+	ps := parsedSong{ref: SongRef{Key: key, Number: number, Name: g.name}, machine: lay.machineName}
+	devs := append([]Deviation{}, ndevs...)
 
 	elst, ok := findEventList(g.files)
 	if !ok {
-		return nil, append(devs, Deviation{Location: loc, SpecRef: "§5.4", Severity: SeverityError,
+		return ps, append(devs, Deviation{Location: loc, SpecRef: "§5.4", Severity: SeverityError,
 			Message: "no EVENTLST file found for song; nothing to extract"})
 	}
 	data, err := img.ReadUserData(elst.dataOff, int(elst.size))
 	if err != nil {
-		return nil, append(devs, Deviation{Location: loc, SpecRef: mf.layout().eventListRef, Severity: SeverityError,
+		return ps, append(devs, Deviation{Location: loc, SpecRef: lay.eventListRef, Severity: SeverityError,
 			Message: fmt.Sprintf("reading event list: %v", err)})
 	}
 	st, edevs := mf.parseTimeline(data)
@@ -205,14 +210,24 @@ func extractCDSong(img cdSource, mf machineFormat, g songGroup, number int, ndev
 	if rateDev != nil {
 		devs = append(devs, *rateDev)
 	}
-	format := Format(elst.formatCode)
+	ps.aud = audioSpec{sampleRate: sampleRate, format: Format(elst.formatCode), clusterSize: blockSize}
+	ps.st = st
+	return ps, devs
+}
 
-	refs, _ := gatherRefs(st) // CD has no §8.3 cluster-count check; counts unused
-	takes, takeDevs := decodeTakes(img, dec, g.files, refs, format, loc)
+// extractCDSong replays one song's event list against its takes into per-v-track
+// results, through the shared parseCDSong prologue. Takes are resolved by FileID
+// (§5.7). On a prologue that produced no timeline the reference gathering is
+// empty, so no take is read and no track is built.
+func extractCDSong(img cdSource, mf machineFormat, g songGroup, number int, ndevs []Deviation, key SongKey, dec Decoder, stereo bool) ([]TrackResult, []Deviation) {
+	ps, devs := parseCDSong(img, mf, g, number, key, ndevs)
+	loc := fmt.Sprintf("song %d", number)
+
+	refs, _ := gatherRefs(ps.st) // CD has no §8.3 cluster-count check; counts unused
+	takes, takeDevs := decodeTakes(img, dec, g.files, refs, ps.aud.format, loc)
 	devs = append(devs, takeDevs...)
 
-	tracks, tlDevs := buildTracks(st, takes, SongRef{Key: key, Number: number, Name: g.name},
-		audioSpec{sampleRate: sampleRate, format: format, clusterSize: blockSize}, stereo)
+	tracks, tlDevs := buildTracks(ps.st, takes, ps.ref, ps.aud, stereo)
 	devs = append(devs, tlDevs...)
 	return tracks, devs
 }
@@ -232,42 +247,27 @@ func listCD(img cdSource, mf machineFormat) ([]SongInfo, []Deviation) {
 	var songs []SongInfo
 	for i, g := range lay.group(files) {
 		number, ndevs := lay.songNumber(img, g, i)
-		devs = append(devs, ndevs...)
 		key := cdSongKey(number)
-		info, sdevs := summarizeCDSong(img, mf, g, number, key)
+		info, sdevs := summarizeCDSong(img, mf, g, number, key, ndevs)
 		devs = append(devs, sdevs...)
 		songs = append(songs, info)
 	}
 	return songs, devs
 }
 
-// summarizeCDSong reads and parses one song's event list (exactly as
-// extractCDSong does up to the point takes would be resolved) and reduces it to a
-// catalog entry: the populated v-track count and timeline length come straight
-// from the neutral timeline, so List and Extract agree by construction.
-func summarizeCDSong(img cdSource, mf machineFormat, g songGroup, number int, key SongKey) (SongInfo, []Deviation) {
-	lay := mf.layout()
-	loc := fmt.Sprintf("song %d", number)
-	base := SongInfo{Key: key, StoredNumber: number, Name: g.name, Machine: lay.machineName}
-
-	elst, ok := findEventList(g.files)
-	if !ok {
-		return base, []Deviation{{Location: loc, SpecRef: "§5.4", Severity: SeverityError,
-			Message: "no EVENTLST file found for song; nothing to extract"}}
+// summarizeCDSong reduces one CD song to a catalog entry through the same
+// parseCDSong prologue extractCDSong runs, then summarises the neutral timeline —
+// so the two report identical prologue deviations and agree on the v-track count
+// and length by construction. It decodes no take.
+func summarizeCDSong(img cdSource, mf machineFormat, g songGroup, number int, key SongKey, ndevs []Deviation) (SongInfo, []Deviation) {
+	ps, devs := parseCDSong(img, mf, g, number, key, ndevs)
+	info := SongInfo{
+		Key:          ps.ref.Key,
+		StoredNumber: ps.ref.Number,
+		Name:         ps.ref.Name,
+		Machine:      ps.machine,
+		SampleRate:   ps.aud.sampleRate,
 	}
-	data, err := img.ReadUserData(elst.dataOff, int(elst.size))
-	if err != nil {
-		return base, []Deviation{{Location: loc, SpecRef: lay.eventListRef, Severity: SeverityError,
-			Message: fmt.Sprintf("reading event list: %v", err)}}
-	}
-	st, devs := mf.parseTimeline(data)
-
-	sampleRate, rateDev := rateFromByte(elst.rateByte, loc)
-	if rateDev != nil {
-		devs = append(devs, *rateDev)
-	}
-
-	base.VTracks, base.Frames = summarizeVTracks(st)
-	base.SampleRate = sampleRate
-	return base, devs
+	info.VTracks, info.Frames = summarizeVTracks(ps.st)
+	return info, devs
 }
