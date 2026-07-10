@@ -286,8 +286,12 @@ func fillerBlock() []byte {
 	return b
 }
 
-// wrapRaw wraps a user-data stream into raw 2352-byte MODE1 frames. Only the
-// mode byte is meaningful for extraction; sync/MSF/ECC are left zero.
+// wrapRaw wraps a user-data stream into raw 2352-byte MODE1 frames. The mode byte
+// and the §10 EDC are the fields extraction reads; sync/MSF/ECC are left zero. A
+// real raw dump carries a correct per-frame EDC, so vsx's §10 damage detector
+// (cd.Image.CorruptFrames) treats a frame whose stored EDC does not match its
+// bytes as corrupt — a fixture must therefore burn the real EDC or every one of
+// its frames would read as damaged.
 func wrapRaw(ud []byte) []byte {
 	frames := (len(ud) + udPerFR - 1) / udPerFR
 	out := make([]byte, frames*frameSize)
@@ -296,7 +300,42 @@ func wrapRaw(ud []byte) []byte {
 		f[15] = 0x01 // mode
 		copy(f[16:16+udPerFR], ud[i*udPerFR:min((i+1)*udPerFR, len(ud))])
 	}
+	RepairEDC(out)
 	return out
+}
+
+// RepairEDC recomputes and rewrites the §10 EDC of every MODE1 frame in a raw
+// dump, in place. A test that pokes a raw dump's user-data bytes after BuildRaw
+// (e.g. to corrupt a signature) calls it to keep the dump physically valid —
+// otherwise the changed bytes no longer match their stored EDC and vsx's §10
+// damage detector reports a corrupt sector, a different fault than the test means
+// to inject.
+func RepairEDC(raw []byte) {
+	for off := 0; off+frameSize <= len(raw); off += frameSize {
+		f := raw[off : off+frameSize]
+		e := edc(f[:2064]) // EDC over sync + header + user data (§10)
+		f[2064], f[2065], f[2066], f[2067] = byte(e), byte(e>>8), byte(e>>16), byte(e>>24)
+	}
+}
+
+// edc computes the MODE1 EDC (ROLAND-VS-FORMAT-SPEC.md §10): the reflected CRC-32
+// with polynomial 0xD8018001, init 0, no final XOR, stored little-endian at frame
+// offset 2064. It is re-derived here straight from the spec rather than imported
+// from internal/cd, so the fixture stays an independent oracle for the reader's
+// own EDC check (ADR-0005): a shared bug in one cannot mask a bug in the other.
+func edc(b []byte) uint32 {
+	var crc uint32
+	for _, v := range b {
+		crc ^= uint32(v)
+		for k := 0; k < 8; k++ {
+			if crc&1 != 0 {
+				crc = (crc >> 1) ^ 0xD8018001
+			} else {
+				crc >>= 1
+			}
+		}
+	}
+	return crc
 }
 
 func pad8(s string) string  { return padTo(s, 8) }

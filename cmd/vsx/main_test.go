@@ -245,8 +245,11 @@ func TestMultipleArgsWithDirectoryIsUsageError(t *testing.T) {
 func TestAsOverrideForcesVR9(t *testing.T) {
 	d := tracerDisc()
 	raw := d.BuildRaw()
-	// Corrupt the signature so autodetection fails; --as must rescue it.
+	// Corrupt the signature so autodetection fails; --as must rescue it. The dump
+	// stays physically valid — its EDC is repaired after the edit — so this tests
+	// signature override alone, not the §10 damage detector.
 	copy(raw[16:16+11], []byte("XXXXXXXXXXX"))
+	vsfix.RepairEDC(raw)
 	src := filepath.Join(t.TempDir(), "nosig.bin")
 	require.NoError(t, os.WriteFile(src, raw, 0o644))
 

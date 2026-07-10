@@ -342,6 +342,29 @@ func TestVR9HDDtoCDCrossCheck(t *testing.T) {
 	t.Skip("HDD↔CD cross-check pending a named HDD+CD song pairing in the corpus")
 }
 
+// TestCorruptSectorMediaDetectsKnownBadFrame verifies the §10 per-frame EDC
+// damage detector against real damaged media (when VSX_TEST_MEDIA is set):
+// vs-cd-6a.bin has exactly one physically corrupt sector — frame 313043, whose
+// stored EDC 1ba752d3 disagrees with the computed 53b3b48f, traced during
+// VS-880EX corpus verification (issue #16) — and the detector must name that
+// frame and no other.
+func TestCorruptSectorMediaDetectsKnownBadFrame(t *testing.T) {
+	dir := testutil.RequireMedia(t)
+	f, err := os.Open(filepath.Join(dir, "vs-cd-6a.bin"))
+	if err != nil {
+		t.Skipf("vs-cd-6a.bin not present under %s", dir)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	require.NoError(t, err)
+	img, err := cd.New(f, info.Size())
+	require.NoError(t, err)
+
+	corrupt, err := img.CorruptFrames()
+	require.NoError(t, err)
+	assert.Equal(t, []int{313043}, corrupt, "the one known corrupt sector is named, and no other")
+}
+
 // TestHDDListKeysAreUnique runs List against real Roland VS HDD images (when
 // VSX_TEST_MEDIA is set) and asserts every song's SongKey is distinct. The key
 // is partition.enumeration-index (PP.OOO), standing in for the VS device's own
