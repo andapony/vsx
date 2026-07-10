@@ -534,14 +534,16 @@ func TestSongFlagExtractsOnlySelected(t *testing.T) {
 	assert.NotContains(t, stdout, "01 - ")
 }
 
-// TestSongFlagUnknownKeyFailsWithHint verifies that a --song key not present
-// on the source fails up front (before any output is written) with a hint to
-// use --list, and a usage-error exit code.
-func TestSongFlagUnknownKeyFailsWithHint(t *testing.T) {
+// TestSongFlagUnknownKeyReportsDeviation verifies that a --song key not present
+// on the source surfaces as a deviation from the single extraction walk (issue
+// #27): nothing matches, so no audio is written, and the deviation flips the
+// exit code and prints a hint to use --list. Core reports the unknown key now,
+// so the CLI no longer runs a separate enumeration pass to validate keys.
+func TestSongFlagUnknownKeyReportsDeviation(t *testing.T) {
 	src := writeDisc(t, twoSongTracerDisc())
 	out := t.TempDir()
 	code, stdout, stderr := runCLI("--song", "9", "-o", out, src)
-	assert.Equal(t, exitUsage, code)
+	assert.Equal(t, exitDeviations, code)
 	assert.Empty(t, stdout, "nothing written on an unknown key")
 	assert.Equal(t, 0, countWavs(t, out))
 	assert.Contains(t, stderr, "no song 9")

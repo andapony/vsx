@@ -71,6 +71,33 @@ func (c extractCtx) selected(key SongKey) bool {
 	return false
 }
 
+// unmatchedSongDeviations reports one warning Deviation per requested --song key
+// that the walk never enumerated (present is the set of keys it saw). This lets
+// core flag an unknown/unrequestable song from the single walk it already
+// performs (issue #27, seam 3), so the command layer no longer runs a separate
+// enumeration pass just to validate keys — a real saving on a multi-GB image.
+// An empty filter requests everything, so it yields nothing.
+func (c extractCtx) unmatchedSongDeviations(present map[SongKey]bool) []Deviation {
+	var out []Deviation
+	seen := map[SongKey]bool{}
+	for _, k := range c.songs {
+		if present[k] || seen[k] {
+			continue
+		}
+		seen[k] = true
+		// SpecRef is left blank: an unknown --song key is a request-level
+		// departure, not a violation of a spec clause (the field's documented
+		// meaning), so it renders as "deviation [warning] song selection: …".
+		out = append(out, Deviation{
+			Location: "song selection",
+			Severity: SeverityWarning,
+			Message: fmt.Sprintf("no song %s on this source; run 'vsx --list' to see available songs",
+				k),
+		})
+	}
+	return out
+}
+
 // ProgressPhase is the coarse stage an extraction has reached.
 type ProgressPhase int
 
@@ -109,6 +136,22 @@ const (
 	SeverityError                   // audio may be lost at this location
 )
 
+// String renders a Severity as a stable lowercase word for display. An
+// out-of-range value (never produced by core) falls back to a numeric form
+// rather than panicking.
+func (s Severity) String() string {
+	switch s {
+	case SeverityInfo:
+		return "info"
+	case SeverityWarning:
+		return "warning"
+	case SeverityError:
+		return "error"
+	default:
+		return fmt.Sprintf("severity(%d)", int(s))
+	}
+}
+
 // Deviation is any respect in which a Source departs from
 // ROLAND-VS-FORMAT-SPEC.md (CONTEXT.md "Deviation"): a missing take, an
 // unknown field value, a truncated rip, a corrupt FAT chain. vsx reports
@@ -118,6 +161,20 @@ type Deviation struct {
 	SpecRef  string   // the spec clause the input violates (e.g. "§5.5")
 	Severity Severity // how serious the departure is
 	Message  string   // human-readable description
+}
+
+// String is the one shared rendering of a Deviation (issue #27): a single line
+// carrying the severity, spec clause, location, and message, so every reporting
+// site in the command layer prints the same form — and the Severity core
+// computes finally reaches the user. A blank SpecRef (a request-level departure
+// with no spec clause, e.g. an unknown --song key) renders without a dangling
+// separator: "deviation [warning] song selection: …".
+func (d Deviation) String() string {
+	ref := d.SpecRef
+	if ref != "" {
+		ref = " " + ref
+	}
+	return fmt.Sprintf("deviation [%s%s] %s: %s", d.Severity, ref, d.Location, d.Message)
 }
 
 // cookedRipDeviation is the §5/§10 data-integrity warning for a cooked (dd)

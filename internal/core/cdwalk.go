@@ -124,9 +124,11 @@ func extractCD(img cdSource, mf machineFormat, ctx extractCtx) (iter.Seq2[TrackR
 	groups := mf.group(files)
 
 	return func(yield func(TrackResult, error) bool) {
+		present := make(map[SongKey]bool, len(groups))
 		for i, g := range groups {
 			number, ndevs := mf.songNumber(img, g, i)
 			key := cdSongKey(number)
+			present[key] = true
 			if !ctx.selected(key) {
 				continue
 			}
@@ -139,6 +141,7 @@ func extractCD(img cdSource, mf machineFormat, ctx extractCtx) (iter.Seq2[TrackR
 				}
 			}
 		}
+		*ctx.devs = append(*ctx.devs, ctx.unmatchedSongDeviations(present)...)
 		ctx.report(Progress{Phase: ProgressDone})
 	}, nil
 }

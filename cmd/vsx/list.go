@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/andapony/vsx/internal/core"
 )
@@ -14,20 +15,17 @@ func runList(songs []core.SongInfo, devs []core.Deviation, stdout, stderr io.Wri
 	fmt.Fprintln(stderr, "KEY\tSONG#\tMACHINE\tV-TRACKS\tDURATION\tNAME")
 	for _, s := range songs {
 		fmt.Fprintf(stdout, "%s\t%d\t%s\t%d\t%s\t%s\n",
-			s.Key.String(), s.StoredNumber, s.Machine, s.VTracks, mmss(s.Frames, s.SampleRate), s.Name)
+			s.Key.String(), s.StoredNumber, s.Machine, s.VTracks, mmss(s.Duration()), s.Name)
 	}
 	for _, d := range devs {
-		fmt.Fprintf(stderr, "deviation [%s] %s: %s\n", d.SpecRef, d.Location, d.Message)
+		fmt.Fprintln(stderr, d)
 	}
 	return exitOK
 }
 
-// mmss renders a frame count as m:ss using the song's sample rate (16 samples per
-// frame). Zero rate yields "0:00".
-func mmss(frames, rate int) string {
-	if rate <= 0 {
-		return "0:00"
-	}
-	secs := frames * 16 / rate
+// mmss renders a duration as m:ss (the samples-per-frame framing lives in core's
+// SongInfo.Duration). A zero duration yields "0:00".
+func mmss(d time.Duration) string {
+	secs := int(d.Seconds())
 	return fmt.Sprintf("%d:%02d", secs/60, secs%60)
 }

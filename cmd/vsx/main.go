@@ -86,27 +86,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runList(catalog, devs, stdout, stderr)
 	}
 
-	if len(songs.keys) > 0 {
-		catalog, _, err := listSources(sources, core.Options{As: override})
-		if err != nil {
-			fmt.Fprintf(stderr, "vsx: %v\n", err)
-			return exitError
-		}
-		have := map[core.SongKey]bool{}
-		for _, si := range catalog {
-			have[si.Key] = true
-		}
-		var missing []string
-		for _, k := range songs.keys {
-			if !have[k] {
-				missing = append(missing, k.String())
-			}
-		}
-		if len(missing) > 0 {
-			fmt.Fprintf(stderr, "vsx: no song %s on this source; run 'vsx --list' to see available songs\n", strings.Join(missing, ", "))
-			return exitUsage
-		}
-	}
+	// An unknown --song key is no longer validated by a separate enumeration
+	// pass: core reports it as a deviation from the single extraction walk (issue
+	// #27), so a --song run enumerates the Source once, not twice — a real saving
+	// on a multi-GB HDD image. The deviation flows through the best-effort/strict
+	// posture like any other (best-effort: exit non-zero; strict: abort).
 
 	// A live progress line is drawn only for an interactive user, and never
 	// alongside -v (whose per-track lines are the progress) or -q. When off, the
@@ -172,7 +156,7 @@ func runBestEffort(result core.Result, outDir string, verbose, quiet bool, stdou
 		devs := result.Deviations()
 		if !quiet {
 			for _, d := range devs[printed:] {
-				status.logf("deviation [%s] %s: %s\n", d.SpecRef, d.Location, d.Message)
+				status.logf("%s\n", d)
 			}
 		}
 		printed = len(devs)
@@ -272,8 +256,7 @@ func runStrict(result core.Result, outDir string, quiet bool, stdout, stderr io.
 func strictAbort(devs []core.Deviation, quiet bool, status *statusLine, stderr io.Writer) int {
 	status.finish()
 	if !quiet {
-		d := devs[0]
-		fmt.Fprintf(stderr, "deviation [%s] %s: %s\n", d.SpecRef, d.Location, d.Message)
+		fmt.Fprintln(stderr, devs[0])
 		fmt.Fprintf(stderr, "vsx: strict: aborted on first deviation; no output written\n")
 	}
 	return exitDeviations

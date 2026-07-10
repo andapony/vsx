@@ -26,8 +26,10 @@ func extractHDD(vol *hdd.Volume, ctx extractCtx) (iter.Seq2[TrackResult, error],
 		return nil, fmt.Errorf("core: enumerating HDD songs: %w", err)
 	}
 	return func(yield func(TrackResult, error) bool) {
+		present := make(map[SongKey]bool, len(songs))
 		for i, s := range songs {
 			key := hddSongKey(s.Partition, s.Index)
+			present[key] = true
 			if !ctx.selected(key) {
 				continue
 			}
@@ -40,6 +42,7 @@ func extractHDD(vol *hdd.Volume, ctx extractCtx) (iter.Seq2[TrackResult, error],
 				}
 			}
 		}
+		*ctx.devs = append(*ctx.devs, ctx.unmatchedSongDeviations(present)...)
 		ctx.report(Progress{Phase: ProgressDone})
 	}, nil
 }
