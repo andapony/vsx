@@ -53,7 +53,20 @@ The machine-neutral result of that reduction (`songTimeline`): a list of
 *v-track groups* (`vtrackGroup` — a v-track's 1-based track, v-track, name, and
 its current-timeline *event records*) plus the *origin* frame the events are
 measured from. Both machines reduce to it; both the extractor's build and the
-lister's summary consume it unchanged, so List and Extract agree by
-construction.
+lister's summary consume it unchanged (wrapped in a **Parsed song**), so List
+and Extract agree by construction.
 _Avoid_: event list (the raw on-disc bytes, before reduction), timeline (the
 spec's per-take placement concept).
+
+**Parsed song**:
+The machine-neutral result of a Source's per-song *prologue* (`parsedSong`): the
+song's identity (`SongRef`), its machine tag, its audio spec (rate, format,
+cluster size), and its *parsed song timeline*. One prologue produces it per song
+— `parseHDDSong` on the HDD path, `parseCDSong` on the CD path — and Extract
+builds tracks from it while List summarises it, so the two report the same
+deviations and the same v-track count/length by construction rather than by two
+code paths kept in sync. A prologue that fails partway leaves the timeline empty
+with the reason in the deviations, so neither consumer needs a success flag.
+_Avoid_: song header (just the bytes at the start of the SONG/event-list file),
+summary (the List-side `SongInfo` rendering, one thing built *from* a parsed
+song).
