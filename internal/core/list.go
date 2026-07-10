@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/andapony/vsx/internal/hdd"
@@ -19,8 +20,9 @@ type SongInfo struct {
 	SampleRate   int    // for rendering Frames as m:ss
 }
 
-// List enumerates a Source's songs without decoding audio. It mirrors
-// Extract's identify/dispatch (sharing identifySource and openBackupSet so the
+// List enumerates a Source's songs without decoding audio. It is the thin path
+// adapter over listReader: it opens the file(s) and delegates. It mirrors
+// Extract's identify/dispatch (sharing identifyReader and openBackupSet so the
 // two paths cannot drift), then summarises each song straight from its event
 // list — the populated v-track count and timeline length are both derivable
 // from the events alone (through the same vtrackStats rule buildVTrack uses,
@@ -39,26 +41,37 @@ func List(sourcePath string, opts Options) ([]SongInfo, []Deviation, error) {
 		return listSet(paths, opts)
 	}
 
-	h, err := identifySource(sourcePath, info, opts)
+	f, err := os.Open(sourcePath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("core: opening source: %w", err)
+	}
+	defer f.Close()
+	return listReader(f, info.Size(), opts)
+}
+
+// listReader is the ReaderAt entry List sits on: it identifies a single Source
+// from its bytes and summarises each song without reading or decoding a take —
+// so no Decoder is ever needed. It reads but does not own r.
+func listReader(r io.ReaderAt, size int64, opts Options) ([]SongInfo, []Deviation, error) {
+	id, err := identifyReader(r, size, opts)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer h.f.Close()
 
-	if h.isHDD {
-		songs, devs := listHDD(h.vol)
+	if id.isHDD {
+		songs, devs := listHDD(id.vol)
 		return songs, devs, nil
 	}
 
 	var devs []Deviation
-	if h.cooked {
+	if id.cooked {
 		devs = append(devs, cookedRipDeviation())
 	}
-	mf := formatFor(h.machine)
+	mf := formatFor(id.machine)
 	if mf == nil {
-		return nil, nil, fmt.Errorf("core: source identified but not yet supported by this build; machine=%v", h.machine)
+		return nil, nil, fmt.Errorf("core: source identified but not yet supported by this build; machine=%v", id.machine)
 	}
-	songs, sdevs := listCD(h.img, mf)
+	songs, sdevs := listCD(id.img, mf)
 	devs = append(devs, sdevs...)
 	return songs, devs, nil
 }
@@ -71,19 +84,26 @@ func ListSet(paths []string, opts Options) ([]SongInfo, []Deviation, error) {
 	return listSet(paths, opts)
 }
 
-// listSet enumerates a list of CD dump files as one multi-disc backup set
-// (§5.6), grouping them exactly as extractSet does, then summarises each song
-// over the stitched reader without decoding any take.
+// listSet is the path adapter for a multi-disc backup set: it opens each disc
+// file into a byte input and delegates to listSetReader.
 func listSet(paths []string, opts Options) ([]SongInfo, []Deviation, error) {
+	return listSetReader(discInputsFromPaths(paths), opts)
+}
+
+// listSetReader enumerates disc byte-inputs as one multi-disc backup set (§5.6),
+// grouping them exactly as extractSetReader does, then summarises each song over
+// the stitched reader without decoding any take.
+func listSetReader(discs []discInput, opts Options) ([]SongInfo, []Deviation, error) {
 	if opts.As.kind == kindHDD {
-		return nil, nil, fmt.Errorf("core: --as=hdd is not valid for a multi-disc CD backup set (an HDD source is a single image)")
+		closeInputs(discs)
+		return nil, nil, errHDDBackupSet()
 	}
 
-	set, err := openBackupSet(paths, opts)
+	set, err := openBackupSet(discs, opts)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer closeAll(set.files)
+	defer closeInputs(set.discs)
 
 	devs := append([]Deviation{}, set.devs...)
 	if set.cooked {

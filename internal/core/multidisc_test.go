@@ -1,8 +1,6 @@
 package core
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,39 +31,27 @@ func spanSongs() []vsfix.Song {
 	}}
 }
 
-// writeSet writes each disc dump to dir under the given filename.
-func writeSet(t *testing.T, dir string, discs [][]byte, names []string) {
-	t.Helper()
-	require.Len(t, names, len(discs))
-	for i, d := range discs {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, names[i]), d, 0o644))
-	}
-}
-
 // TestSpanningReconstructsByteExact is the headline §5.6 acceptance criterion at
 // the pipeline level: a take split across a disc boundary extracts to the exact
-// same PCM as the identical take on a single disc. The two-disc set's files are
-// named so that sorted filename order is the reverse of disc-index order, which
-// also proves the set is ordered by disc index, not by filename or argument
-// order.
+// same PCM as the identical take on a single disc. The two-disc set is handed to
+// the ReaderAt entry in reverse disc-index order, which also proves the set is
+// ordered by disc index, not by input order.
 func TestSpanningReconstructsByteExact(t *testing.T) {
 	songs := spanSongs()
 
 	// Single-disc reference: the whole take on one disc, no spanning.
-	single := filepath.Join(t.TempDir(), "single.bin")
-	require.NoError(t, os.WriteFile(single, vsfix.Disc{SetID: [4]byte{7, 7, 7, 7}, Songs: songs}.BuildRaw(), 0o644))
-	refTracks, refDevs := collectTracks(t, mustExtract(t, single, Options{}))
+	ref := vsfix.Disc{SetID: [4]byte{7, 7, 7, 7}, Songs: songs}.BuildRaw()
+	refTracks, refDevs := collectTracks(t, mustExtractBytes(t, ref, Options{}))
 	require.Len(t, refTracks, 1)
 	assert.Empty(t, refDevs, "the single-disc reference is spec-clean")
 	wantHash := testutil.PCMHash(refTracks[0].PCM.Samples)
 
 	// Two-disc set: the same take split 1 block on disc 0, remainder on disc 1.
-	dir := t.TempDir()
 	discs := vsfix.VR9Set{SetID: [4]byte{7, 7, 7, 7}, Songs: songs, SpanFileID: 0x0100, SpanAvailBlocks: 1}.BuildDiscsRaw()
 	require.Len(t, discs, 2)
-	writeSet(t, dir, discs, []string{"z_disc0.bin", "a_disc1.bin"}) // sorted order reversed
+	set := memDiscs([][]byte{discs[1], discs[0]}, "disc1.bin", "disc0.bin") // reverse of index order
 
-	gotTracks, gotDevs := collectTracks(t, mustExtract(t, dir, Options{}))
+	gotTracks, gotDevs := collectTracks(t, mustExtractSetBytes(t, set, Options{}))
 	require.Len(t, gotTracks, 1, "the set extracts as one Source with one populated v-track")
 	assert.Equal(t, 1, gotTracks[0].Song.Number)
 	assert.Equal(t, 1, gotTracks[0].Track)
@@ -83,19 +69,17 @@ func TestSpanningReconstructsByteExact(t *testing.T) {
 func TestVR5SpanningReconstructsByteExact(t *testing.T) {
 	songs := vr5SpanSongs()
 
-	single := filepath.Join(t.TempDir(), "single.bin")
-	require.NoError(t, os.WriteFile(single, vsfix.VR5Disc{SetID: [4]byte{5, 5, 5, 5}, Songs: songs}.BuildRaw(), 0o644))
-	refTracks, refDevs := collectTracks(t, mustExtract(t, single, Options{}))
+	ref := vsfix.VR5Disc{SetID: [4]byte{5, 5, 5, 5}, Songs: songs}.BuildRaw()
+	refTracks, refDevs := collectTracks(t, mustExtractBytes(t, ref, Options{}))
 	require.Len(t, refTracks, 1)
 	assert.Empty(t, refDevs, "the single-disc VR5 reference is spec-clean")
 	wantHash := testutil.PCMHash(refTracks[0].PCM.Samples)
 
-	dir := t.TempDir()
 	discs := vsfix.VR5Set{SetID: [4]byte{5, 5, 5, 5}, Songs: songs, SpanFileID: 0x9CC7, SpanAvailBlocks: 1}.BuildDiscsRaw()
 	require.Len(t, discs, 2)
-	writeSet(t, dir, discs, []string{"z_disc0.bin", "a_disc1.bin"})
+	set := memDiscs([][]byte{discs[1], discs[0]}, "disc1.bin", "disc0.bin") // reverse of index order
 
-	gotTracks, gotDevs := collectTracks(t, mustExtract(t, dir, Options{}))
+	gotTracks, gotDevs := collectTracks(t, mustExtractSetBytes(t, set, Options{}))
 	require.Len(t, gotTracks, 1)
 	assert.Equal(t, wantHash, testutil.PCMHash(gotTracks[0].PCM.Samples),
 		"the spanned VR5 take reconstructs byte-exactly")
@@ -137,10 +121,9 @@ func TestSpanJunctionHeaderMismatchReported(t *testing.T) {
 	// so it no longer matches the spanning file's header on disc 0.
 	pokeRawUserData(discs[1], offFileID+1, 0xFF)
 
-	dir := t.TempDir()
-	writeSet(t, dir, discs, []string{"disc0.bin", "disc1.bin"})
+	set := memDiscs(discs, "disc0.bin", "disc1.bin")
 
-	_, devs := collectTracks(t, mustExtract(t, dir, Options{}))
+	_, devs := collectTracks(t, mustExtractSetBytes(t, set, Options{}))
 	assert.True(t, hasDeviationMentioning(devs, "does not repeat this file's header"),
 		"the §5.6 header-repeat mismatch is reported")
 }
@@ -152,10 +135,9 @@ func TestMissingDiscPartialOutput(t *testing.T) {
 	songs := spanSongs()
 	discs := vsfix.VR9Set{SetID: [4]byte{7, 7, 7, 7}, Songs: songs, SpanFileID: 0x0100, SpanAvailBlocks: 1}.BuildDiscsRaw()
 
-	dir := t.TempDir()
-	writeSet(t, dir, discs[:1], []string{"disc0.bin"}) // only disc 0
+	set := memDiscs(discs[:1], "disc0.bin") // only disc 0
 
-	tracks, devs := collectTracks(t, mustExtract(t, dir, Options{}))
+	tracks, devs := collectTracks(t, mustExtractSetBytes(t, set, Options{}))
 	require.Len(t, tracks, 1, "the spanning take still yields partial audio")
 	assert.Positive(t, len(tracks[0].PCM.Samples), "partial samples were recovered")
 
@@ -170,32 +152,22 @@ func TestForeignFilesReportedAndSkipped(t *testing.T) {
 	songs := spanSongs()
 	discs := vsfix.VR9Set{SetID: [4]byte{7, 7, 7, 7}, Songs: songs, SpanFileID: 0x0100, SpanAvailBlocks: 1}.BuildDiscsRaw()
 
-	dir := t.TempDir()
-	writeSet(t, dir, discs, []string{"disc0.bin", "disc1.bin"})
-	// An unrelated file: not CD geometry.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("not a disc"), 0o644))
 	// A disc from a different set.
 	foreign := vsfix.Disc{SetID: [4]byte{3, 3, 3, 3}, Songs: []vsfix.Song{{
 		Number: 9, Name: "OTHER",
 		Takes:  []vsfix.Take{{FileID: 0x0200, Name: "TAKE0200", MT2: silentMT2(2)}},
 		Events: []vsfix.Event{{Start: 12, End: 16, FileID: 0x0200, Track: 1, VTrack: 1}},
 	}}}.BuildRaw()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "foreign.bin"), foreign, 0o644))
+	// The set plus an unrelated file (not CD geometry) and the foreign-set disc.
+	set := memDiscs([][]byte{discs[0], discs[1], []byte("not a disc"), foreign},
+		"disc0.bin", "disc1.bin", "notes.txt", "foreign.bin")
 
-	tracks, devs := collectTracks(t, mustExtract(t, dir, Options{}))
+	tracks, devs := collectTracks(t, mustExtractSetBytes(t, set, Options{}))
 	require.Len(t, tracks, 1, "only the primary set's audio is extracted")
 	assert.Equal(t, "SPAN", tracks[0].Song.Name)
 
 	assert.True(t, hasDeviationMentioning(devs, "notes.txt"), "the unrelated file is reported")
 	assert.True(t, hasDeviationMentioning(devs, "foreign"), "the different-set disc is reported")
-}
-
-// mustExtract opens a Source and fails the test on error.
-func mustExtract(t *testing.T, path string, opts Options) Result {
-	t.Helper()
-	r, err := Extract(path, opts)
-	require.NoError(t, err)
-	return r
 }
 
 // hasDeviationMentioning reports whether any deviation's location or message

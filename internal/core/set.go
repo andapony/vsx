@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -9,61 +10,90 @@ import (
 	"github.com/andapony/vsx/internal/cd"
 )
 
-// setDisc is one opened, classified disc of a candidate backup set: its file
-// handle, its CD image, the machine its signature names, and the §5.2
+// discInput is one candidate disc of a backup set as bytes rather than a path:
+// a random-access read surface, its length, a name for deviation messages, and
+// a close func (nil for an in-memory source) run once the disc is done with.
+// openDev, when non-nil, is a disc the path adapter could not open or stat —
+// openBackupSet reports it and moves on, so file-I/O failures stay in the path
+// layer while the byte-level assembly (grouping, ordering, spanning) is driven
+// entirely from these inputs and so runs diskless in tests.
+type discInput struct {
+	r       io.ReaderAt
+	size    int64
+	name    string
+	close   func()
+	openDev *Deviation
+}
+
+// closeInput runs the input's close func if it has one (in-memory inputs do not).
+func (in discInput) closeInput() {
+	if in.close != nil {
+		in.close()
+	}
+}
+
+// setDisc is one opened, classified disc of a candidate backup set: its byte
+// input, its CD image, the machine its signature names, and the §5.2
 // set-membership fields it is grouped and ordered by.
 type setDisc struct {
-	f       *os.File
+	in      discInput
 	img     *cd.Image
 	machine machine
 	setID   [4]byte
 	index   uint16
 	total   uint16
-	name    string // basename, for deviation messages
 	cooked  bool
 }
 
+// name is the disc's basename, carried on its input for deviation messages.
+func (d setDisc) name() string { return d.in.name }
+
 // assembledSet is a directory grouped down to one backup set ready to extract:
 // a stitched multi-disc reader (§5.6), the machine to read it as, and the
-// deviations found while grouping (foreign files, missing discs). files are the
-// chosen set's disc handles, kept open for the lazy walk and closed when it ends.
+// deviations found while grouping (foreign files, missing discs). discs are the
+// chosen set's byte inputs, kept open for the lazy walk and closed when it ends.
 type assembledSet struct {
 	reader  cdSource
 	machine machine
 	cooked  bool
-	files   []*os.File
+	discs   []discInput
 	devs    []Deviation
 }
 
-// openBackupSet groups the given CD dump files into a single backup set
-// (§5.2/§5.6): it opens every path, keeps those that are CD archives of one
-// set (chosen as described in chooseSet), orders them by disc index, and builds
-// a stitched reader over the contiguous run from disc 0. Foreign files (a
+// openBackupSet groups the given disc byte-inputs into a single backup set
+// (§5.2/§5.6): it classifies each as a CD archive, keeps those of one set
+// (chosen as described in chooseSet), orders them by disc index, and builds a
+// stitched reader over the contiguous run from disc 0. Foreign files (a
 // different set ID or a non-archive file) and missing discs are reported as
 // deviations rather than failing the run; a set with no index-0 anchor cannot
-// be read and is a hard error.
-func openBackupSet(paths []string, opts Options) (*assembledSet, error) {
-	var discs []setDisc
+// be read and is a hard error. It opens no files and closes only the inputs it
+// discards, so the whole assembly is exercised from in-memory bytes in tests.
+func openBackupSet(discs []discInput, opts Options) (*assembledSet, error) {
+	var classified []setDisc
 	var devs []Deviation
-	for _, p := range paths {
-		d, dev, ok := classifyDisc(p, filepath.Base(p), opts)
+	for _, in := range discs {
+		if in.openDev != nil {
+			devs = append(devs, *in.openDev)
+			continue
+		}
+		d, dev, ok := classifyDisc(in, opts)
 		if dev != nil {
 			devs = append(devs, *dev)
 		}
 		if ok {
-			discs = append(discs, d)
+			classified = append(classified, d)
 		}
 	}
-	if len(discs) == 0 {
+	if len(classified) == 0 {
 		return nil, fmt.Errorf("core: no CD backup-set discs found in the given source")
 	}
 
-	chosen, setID, foreign := chooseSet(discs)
+	chosen, setID, foreign := chooseSet(classified)
 	for _, d := range foreign {
-		devs = append(devs, Deviation{Location: d.name, SpecRef: "§5.2", Severity: SeverityWarning,
+		devs = append(devs, Deviation{Location: d.name(), SpecRef: "§5.2", Severity: SeverityWarning,
 			Message: fmt.Sprintf("disc belongs to a different backup set (%s, not the chosen %s); skipped",
 				setIDString(d.setID), setIDString(setID))})
-		d.f.Close()
+		d.in.closeInput()
 	}
 
 	ordered, orderDevs := orderDiscs(chosen)
@@ -74,11 +104,11 @@ func openBackupSet(paths []string, opts Options) (*assembledSet, error) {
 	}
 
 	imgs := make([]*cd.Image, len(ordered))
-	files := make([]*os.File, len(ordered))
+	inputs := make([]discInput, len(ordered))
 	cooked := false
 	for i, d := range ordered {
 		imgs[i] = d.img
-		files[i] = d.f
+		inputs[i] = d.in
 		cooked = cooked || d.cooked
 	}
 	set, err := cd.NewSet(imgs)
@@ -87,7 +117,7 @@ func openBackupSet(paths []string, opts Options) (*assembledSet, error) {
 		return nil, fmt.Errorf("core: %w", err)
 	}
 	for _, pos := range set.MissingFiller() {
-		devs = append(devs, Deviation{Location: ordered[pos].name, SpecRef: "§10", Severity: SeverityError,
+		devs = append(devs, Deviation{Location: ordered[pos].name(), SpecRef: "§10", Severity: SeverityError,
 			Message: fmt.Sprintf("disc index %d lacks a trailing TDI filler run; its data end was estimated, which may corrupt a spanned file", ordered[pos].index)})
 	}
 
@@ -95,14 +125,41 @@ func openBackupSet(paths []string, opts Options) (*assembledSet, error) {
 		reader:  set,
 		machine: ordered[0].machine,
 		cooked:  cooked,
-		files:   files,
+		discs:   inputs,
 		devs:    devs,
 	}, nil
 }
 
+// discInputsFromPaths opens each path into a discInput — the path adapter's half
+// of the ReaderAt seam. A file that cannot be opened or statted becomes a
+// discInput carrying only its openDev deviation, so openBackupSet reports the
+// file-I/O failure (the sole path-specific deviation) in source order without
+// core needing to touch the filesystem.
+func discInputsFromPaths(paths []string) []discInput {
+	out := make([]discInput, 0, len(paths))
+	for _, p := range paths {
+		name := filepath.Base(p)
+		f, err := os.Open(p)
+		if err != nil {
+			out = append(out, discInput{name: name, openDev: &Deviation{Location: name, SpecRef: "§5", Severity: SeverityWarning,
+				Message: fmt.Sprintf("could not open file: %v; skipped", err)}})
+			continue
+		}
+		info, err := f.Stat()
+		if err != nil {
+			f.Close()
+			out = append(out, discInput{name: name, openDev: &Deviation{Location: name, SpecRef: "§5", Severity: SeverityWarning,
+				Message: fmt.Sprintf("could not stat file: %v; skipped", err)}})
+			continue
+		}
+		out = append(out, discInput{r: f, size: info.Size(), name: name, close: func() { f.Close() }})
+	}
+	return out
+}
+
 // discPathsInDir lists a directory's non-directory entries as full paths, in
 // the order os.ReadDir yields them (lexical by name) — the disc-file path list
-// openBackupSet consumes for the directory form of a backup set.
+// the directory form of a backup set consumes.
 func discPathsInDir(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -118,48 +175,37 @@ func discPathsInDir(dir string) ([]string, error) {
 	return paths, nil
 }
 
-// classifyDisc opens one directory entry and decides whether it is a CD archive
-// disc that can join a set. A file that is not CD geometry or carries no known
-// archive signature is a foreign file (reported, skipped); a readable archive
-// disc is returned with its §5.2 fields. The returned deviation, when non-nil,
-// is reported whether or not the disc is usable.
-func classifyDisc(path, name string, opts Options) (setDisc, *Deviation, bool) {
-	f, err := os.Open(path)
+// classifyDisc decides whether one disc input is a CD archive that can join a
+// set. A file that is not CD geometry or carries no known archive signature is a
+// foreign file (reported, skipped, its input closed); a readable archive disc is
+// returned with its §5.2 fields. The returned deviation, when non-nil, is
+// reported whether or not the disc is usable.
+func classifyDisc(in discInput, opts Options) (setDisc, *Deviation, bool) {
+	img, err := cd.New(in.r, in.size)
 	if err != nil {
-		return setDisc{}, &Deviation{Location: name, SpecRef: "§5", Severity: SeverityWarning,
-			Message: fmt.Sprintf("could not open file: %v; skipped", err)}, false
-	}
-	info, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return setDisc{}, &Deviation{Location: name, SpecRef: "§5", Severity: SeverityWarning,
-			Message: fmt.Sprintf("could not stat file: %v; skipped", err)}, false
-	}
-	img, err := cd.New(f, info.Size())
-	if err != nil {
-		f.Close()
-		return setDisc{}, &Deviation{Location: name, SpecRef: "§5.1", Severity: SeverityWarning,
+		in.closeInput()
+		return setDisc{}, &Deviation{Location: in.name, SpecRef: "§5.1", Severity: SeverityWarning,
 			Message: "not a CD dump (unusable frame/sector geometry); skipped as an unrelated file"}, false
 	}
 	sig, err := img.ReadUserData(0, 32)
 	if err != nil {
-		f.Close()
-		return setDisc{}, &Deviation{Location: name, SpecRef: "§5.2", Severity: SeverityWarning,
+		in.closeInput()
+		return setDisc{}, &Deviation{Location: in.name, SpecRef: "§5.2", Severity: SeverityWarning,
 			Message: fmt.Sprintf("could not read archive signature: %v; skipped", err)}, false
 	}
 	m := machineForSig(string(sig), opts.As.machine)
 	if m == machineUnknown {
-		f.Close()
-		return setDisc{}, &Deviation{Location: name, SpecRef: "§5.2", Severity: SeverityWarning,
+		in.closeInput()
+		return setDisc{}, &Deviation{Location: in.name, SpecRef: "§5.2", Severity: SeverityWarning,
 			Message: "no known archive signature; skipped as an unrelated file"}, false
 	}
 	h, err := img.ArchiveHeader()
 	if err != nil {
-		f.Close()
-		return setDisc{}, &Deviation{Location: name, SpecRef: "§5.2", Severity: SeverityWarning,
+		in.closeInput()
+		return setDisc{}, &Deviation{Location: in.name, SpecRef: "§5.2", Severity: SeverityWarning,
 			Message: fmt.Sprintf("could not read archive header: %v; skipped", err)}, false
 	}
-	return setDisc{f: f, img: img, machine: m, setID: h.SetID, index: h.DiscIndex, total: h.TotalDiscs, name: name, cooked: img.Cooked()}, nil, true
+	return setDisc{in: in, img: img, machine: m, setID: h.SetID, index: h.DiscIndex, total: h.TotalDiscs, cooked: img.Cooked()}, nil, true
 }
 
 // chooseSet partitions discs by set ID and picks the primary set: the group is
@@ -240,9 +286,9 @@ func orderDiscs(discs []setDisc) ([]setDisc, []Deviation) {
 	for _, d := range discs {
 		switch {
 		case d.index < next: // duplicate index
-			devs = append(devs, Deviation{Location: d.name, SpecRef: "§5.2", Severity: SeverityWarning,
+			devs = append(devs, Deviation{Location: d.name(), SpecRef: "§5.2", Severity: SeverityWarning,
 				Message: fmt.Sprintf("duplicate disc index %d; keeping the first, skipping this one", d.index)})
-			d.f.Close()
+			d.in.closeInput()
 		case d.index == next:
 			run = append(run, d)
 			next++
@@ -251,9 +297,9 @@ func orderDiscs(discs []setDisc) ([]setDisc, []Deviation) {
 			for missing := next; missing < d.index; missing++ {
 				devs = append(devs, missingDiscDeviation(missing, total))
 			}
-			devs = append(devs, Deviation{Location: d.name, SpecRef: "§5.6", Severity: SeverityError,
+			devs = append(devs, Deviation{Location: d.name(), SpecRef: "§5.6", Severity: SeverityError,
 				Message: fmt.Sprintf("disc index %d present but unreachable because an earlier disc is missing; skipped", d.index)})
-			d.f.Close()
+			d.in.closeInput()
 		}
 	}
 	// Report any remaining missing indices below the declared total.
@@ -294,10 +340,18 @@ func setIDString(id [4]byte) string {
 	return fmt.Sprintf("set %02x%02x%02x%02x", id[0], id[1], id[2], id[3])
 }
 
-// closeDiscs closes every disc's file handle — used on an error path where no
-// Result will take ownership of them.
+// closeDiscs closes every classified disc's input — used on an error path where
+// no Result will take ownership of them.
 func closeDiscs(discs []setDisc) {
 	for _, d := range discs {
-		d.f.Close()
+		d.in.closeInput()
+	}
+}
+
+// closeInputs closes every disc input — the teardown for a chosen set on an
+// error path, and (via streamClosingInputs) once the lazy walk ends.
+func closeInputs(discs []discInput) {
+	for _, in := range discs {
+		in.closeInput()
 	}
 }

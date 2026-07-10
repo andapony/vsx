@@ -1,8 +1,7 @@
 package core
 
 import (
-	"os"
-	"path/filepath"
+	"bytes"
 	"testing"
 
 	"github.com/andapony/vsx/internal/vsfix"
@@ -63,10 +62,10 @@ func TestResultDeviations(t *testing.T) {
 	assert.Equal(t, devs, r.Deviations())
 }
 
-// TestExtractNonexistentSourceErrors verifies that pointing Extract at a path
-// that cannot be opened returns an error rather than an empty success.
+// TestExtractNonexistentSourceErrors verifies that pointing the path API at a
+// file that cannot be opened returns an error rather than an empty success.
 func TestExtractNonexistentSourceErrors(t *testing.T) {
-	_, err := Extract(filepath.Join(t.TempDir(), "does-not-exist.img"), Options{})
+	_, err := Extract("/nonexistent/does-not-exist.img", Options{})
 	require.Error(t, err)
 }
 
@@ -75,10 +74,8 @@ func TestExtractNonexistentSourceErrors(t *testing.T) {
 // error, not a silent empty success (issue #3: unidentifiable input exits with
 // an error).
 func TestExtractUnidentifiableSourceErrors(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "src.img")
-	require.NoError(t, os.WriteFile(path, []byte("placeholder"), 0o644))
-
-	_, err := Extract(path, Options{})
+	raw := []byte("placeholder")
+	_, err := extractReader(bytes.NewReader(raw), int64(len(raw)), NewDecoder(), Options{})
 	require.Error(t, err)
 }
 
@@ -87,11 +84,8 @@ func TestExtractUnidentifiableSourceErrors(t *testing.T) {
 // deviations, safe to range over.
 func TestExtractEmptyArchiveIsSafe(t *testing.T) {
 	disc := vsfix.Disc{SetID: [4]byte{1, 2, 3, 4}, Songs: []vsfix.Song{{Number: 1, Name: "EMPTY"}}}
-	path := filepath.Join(t.TempDir(), "empty.bin")
-	require.NoError(t, os.WriteFile(path, disc.BuildRaw(), 0o644))
 
-	r, err := Extract(path, Options{})
-	require.NoError(t, err)
+	r := mustExtractBytes(t, disc.BuildRaw(), Options{})
 	for range r.Tracks() {
 		require.Fail(t, "an empty archive should yield no tracks")
 	}

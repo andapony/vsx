@@ -2,8 +2,6 @@ package core
 
 import (
 	"encoding/binary"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/andapony/vsx/internal/hddfix"
@@ -13,8 +11,7 @@ import (
 
 // collidingHDD builds a two-partition VR9 HDD image where both partitions hold a
 // SONG0000 with the SAME stored number and name — the multi-partition collision.
-func collidingHDD(t *testing.T) string {
-	t.Helper()
+func collidingHDD() []byte {
 	song := hddfix.Song{
 		Number: 5, Name: "INIT", Ext: "VR9",
 		Takes:  []hddfix.Take{{NameCluster: 0x0100, Content: make([]byte, 12*4)}},
@@ -23,15 +20,11 @@ func collidingHDD(t *testing.T) string {
 	disk := hddfix.Disk{Partitions: []hddfix.Partition{
 		{Songs: []hddfix.Song{song}}, {Songs: []hddfix.Song{song}},
 	}}
-	path := filepath.Join(t.TempDir(), "collide.img")
-	require.NoError(t, os.WriteFile(path, disk.Build(), 0o644))
-	return path
+	return disk.Build()
 }
 
 func TestHDDSongKeysDisambiguateAcrossPartitions(t *testing.T) {
-	r, err := Extract(collidingHDD(t), Options{})
-	require.NoError(t, err)
-	tracks, _ := collectTracks(t, r)
+	tracks, _ := collectTracks(t, mustExtractBytes(t, collidingHDD(), Options{}))
 	require.Len(t, tracks, 2)
 	assert.NotEqual(t, tracks[0].Song.Key, tracks[1].Song.Key, "keys disambiguate across partitions")
 	assert.Equal(t, SongKey{Partition: 1, Ordinal: 0}, tracks[0].Song.Key)
@@ -55,23 +48,10 @@ func TestHDDSongKeysUniqueWithinPartition(t *testing.T) {
 			Events: []hddfix.Event{{Start: 12, End: 16, NameCluster: 0x0100, Track: 1, VTrack: 1}}}
 	}
 	disk := hddfix.Disk{Partitions: []hddfix.Partition{{Songs: []hddfix.Song{mk("A"), mk("B")}}}}
-	path := filepath.Join(t.TempDir(), "onepart.img")
-	require.NoError(t, os.WriteFile(path, disk.Build(), 0o644))
-	r, err := Extract(path, Options{})
-	require.NoError(t, err)
-	tracks, _ := collectTracks(t, r)
+	tracks, _ := collectTracks(t, mustExtractBytes(t, disk.Build(), Options{}))
 	require.Len(t, tracks, 2)
 	assert.Equal(t, SongKey{Partition: 1, Ordinal: 0}, tracks[0].Song.Key)
 	assert.Equal(t, SongKey{Partition: 1, Ordinal: 1}, tracks[1].Song.Key)
-}
-
-// writeDisk builds a synthetic HDD image and writes it to a temp file, returning
-// the path — the input contract Extract takes (one path in).
-func writeDisk(t *testing.T, d hddfix.Disk) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "disk.img")
-	require.NoError(t, os.WriteFile(path, d.Build(), 0o644))
-	return path
 }
 
 // TestHDDListReportsMachineTagWhenSongHeaderUnreadable pins the shared prologue's
@@ -81,20 +61,17 @@ func writeDisk(t *testing.T, d hddfix.Disk) string {
 // than leaving it blank. This unifies HDD with CD (whose summary always carried
 // the machine tag) and is reported alongside the §4.4 no-SONG deviation.
 func TestHDDListReportsMachineTagWhenSongHeaderUnreadable(t *testing.T) {
-	path := writeDisk(t, hddfix.Disk{Partitions: []hddfix.Partition{{Songs: []hddfix.Song{{
+	raw := hddfix.Disk{Partitions: []hddfix.Partition{{Songs: []hddfix.Song{{
 		Number: 1, Name: "GONE", Ext: "VR9", OmitSong: true,
-	}}}}})
+	}}}}}.Build()
 
-	songs, devs, err := List(path, Options{})
-	require.NoError(t, err)
+	songs, devs := mustListBytes(t, raw, Options{})
 	require.Len(t, songs, 1)
 	assert.Equal(t, "VR9", songs[0].Machine, "machine tag comes from the directory extension even when SONG is unreadable")
 	assert.NotEmpty(t, devs, "the missing SONG file is still reported as a deviation")
 
 	// Extract agrees: no tracks, and it reports the same no-SONG deviation.
-	r, err := Extract(path, Options{})
-	require.NoError(t, err)
-	tracks, edevs := collectTracks(t, r)
+	tracks, edevs := collectTracks(t, mustExtractBytes(t, raw, Options{}))
 	assert.Empty(t, tracks, "a song with no SONG header yields no audio")
 	assert.Equal(t, devs, edevs, "List and Extract report the same deviation for the headerless song")
 }
@@ -135,9 +112,7 @@ func TestExtractHDDVR9EndToEnd(t *testing.T) {
 			Events: []hddfix.Event{{Start: 12, End: 13, NameCluster: 0x0100, Track: 2, VTrack: 3}},
 		}},
 	}}}
-	r, err := Extract(writeDisk(t, disk), Options{})
-	require.NoError(t, err)
-	tracks, devs := collectTracks(t, r)
+	tracks, devs := collectTracks(t, mustExtractBytes(t, disk.Build(), Options{}))
 
 	require.Len(t, tracks, 1)
 	assert.Equal(t, 7, tracks[0].Song.Number)
@@ -172,9 +147,7 @@ func TestExtractHDDBothMachinesInOnePartition(t *testing.T) {
 			},
 		},
 	}}}
-	r, err := Extract(writeDisk(t, disk), Options{})
-	require.NoError(t, err)
-	tracks, devs := collectTracks(t, r)
+	tracks, devs := collectTracks(t, mustExtractBytes(t, disk.Build(), Options{}))
 
 	require.Len(t, tracks, 2)
 	byNum := map[int][]int32{}
@@ -198,9 +171,7 @@ func TestExtractHDDVR5EndToEnd(t *testing.T) {
 			Events: []hddfix.Event{{Start: 0, End: 1, NameCluster: 0x0100, Track: 5, VTrack: 2}},
 		}},
 	}}}
-	r, err := Extract(writeDisk(t, disk), Options{})
-	require.NoError(t, err)
-	tracks, devs := collectTracks(t, r)
+	tracks, devs := collectTracks(t, mustExtractBytes(t, disk.Build(), Options{}))
 
 	require.Len(t, tracks, 1)
 	assert.Equal(t, 3, tracks[0].Song.Number)
@@ -228,9 +199,7 @@ func TestExtractHDDMixedMachineDisk(t *testing.T) {
 			Events: []hddfix.Event{{Start: 12, End: 13, NameCluster: 0x0200, Track: 1, VTrack: 1}},
 		}}},
 	}}
-	r, err := Extract(writeDisk(t, disk), Options{})
-	require.NoError(t, err)
-	tracks, devs := collectTracks(t, r)
+	tracks, devs := collectTracks(t, mustExtractBytes(t, disk.Build(), Options{}))
 
 	require.Len(t, tracks, 2)
 	byNum := map[int][]int32{}
@@ -257,9 +226,7 @@ func TestExtractHDDCopiedTakeResolvesByFilename(t *testing.T) {
 			Events: []hddfix.Event{{Start: 12, End: 13, NameCluster: 0x0100, Track: 1, VTrack: 1}},
 		}},
 	}}}
-	r, err := Extract(writeDisk(t, disk), Options{})
-	require.NoError(t, err)
-	tracks, devs := collectTracks(t, r)
+	tracks, devs := collectTracks(t, mustExtractBytes(t, disk.Build(), Options{}))
 
 	require.Len(t, tracks, 1)
 	assert.Equal(t, want, tracks[0].PCM.Samples, "resolved by filename TAKE0100, not by event cluster 0x0100")
@@ -287,9 +254,7 @@ func TestExtractHDDTruncatedChainWarns(t *testing.T) {
 			Events: []hddfix.Event{{Start: 12, End: 12 + 64, NameCluster: 0x0100, Count: 2, Track: 1, VTrack: 1}},
 		}},
 	}}}
-	r, err := Extract(writeDisk(t, disk), Options{})
-	require.NoError(t, err)
-	tracks, devs := collectTracks(t, r)
+	tracks, devs := collectTracks(t, mustExtractBytes(t, disk.Build(), Options{}))
 
 	require.Len(t, tracks, 1, "the v-track is still emitted, not dropped")
 	found := false
