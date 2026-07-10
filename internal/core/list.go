@@ -143,13 +143,5 @@ func listHDD(vol *hdd.Volume) ([]SongInfo, []Deviation) {
 // count and length by construction. It decodes no take and constructs no Decoder.
 func summarizeHDDSong(song hdd.Song) (SongInfo, []Deviation) {
 	ps, _, devs := parseHDDSong(song)
-	info := SongInfo{
-		Key:          ps.ref.Key,
-		StoredNumber: ps.ref.Number,
-		Name:         ps.ref.Name,
-		Machine:      ps.machine,
-		SampleRate:   ps.aud.sampleRate,
-	}
-	info.VTracks, info.Frames = summarizeVTracks(ps.st)
-	return info, devs
+	return ps.songInfo(), devs
 }
