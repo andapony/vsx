@@ -380,6 +380,15 @@ func extractReader(r io.ReaderAt, size int64, dec Decoder, opts Options) (Result
 
 	if id.cooked {
 		*devs = append(*devs, cookedRipDeviation())
+	} else {
+		// Raw dumps carry a per-frame EDC (§10): verify it so a physically corrupt
+		// sector — which the codec would otherwise decode into noise silently — is
+		// reported. A cooked rip has no EDC, so its §5 warning stands in instead.
+		// Unlike the O(1) cooked check, this is a full-disc read, so it runs only on
+		// the extract path (which reads the whole disc anyway); List stays a fast
+		// catalog and does not scan.
+		corrupt, cerr := id.img.CorruptFrames()
+		*devs = append(*devs, edcScanDeviations("disc", corrupt, cerr)...)
 	}
 	mf := formatFor(id.machine)
 	if mf == nil {
@@ -428,6 +437,7 @@ func extractSetReader(discs []discInput, dec Decoder, opts Options) (Result, err
 	if set.cooked {
 		*devs = append(*devs, cookedRipDeviation())
 	}
+	*devs = append(*devs, setEDCDeviations(set)...)
 
 	mf := formatFor(set.machine)
 	if mf == nil {
