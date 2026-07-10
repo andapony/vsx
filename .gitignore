@@ -3,3 +3,6 @@
 
 # Local Claude Code settings (personal, not shared)
 .claude/settings.local.json
+
+# Claude Code worktrees (isolated workspaces, not shared)
+.claude/worktrees/
