@@ -2,8 +2,6 @@ package core
 
 import (
 	"encoding/binary"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/andapony/vsx/internal/vsfix"
@@ -162,12 +160,7 @@ func TestExtractVR5EndToEnd(t *testing.T) {
 			},
 		}},
 	}
-	path := filepath.Join(t.TempDir(), "vr5.bin")
-	require.NoError(t, os.WriteFile(path, disc.BuildRaw(), 0o644))
-
-	r, err := Extract(path, Options{})
-	require.NoError(t, err)
-	tracks, devs := collectTracks(t, r)
+	tracks, devs := collectTracks(t, mustExtractBytes(t, disc.BuildRaw(), Options{}))
 	assert.Empty(t, devs, "a well-formed VR5 disc extracts cleanly")
 
 	require.Len(t, tracks, 2)
