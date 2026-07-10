@@ -31,11 +31,11 @@ func (s lookaheadSource) ReadUserData(_ int64, n int) ([]byte, error) {
 func (lookaheadSource) UserDataLen() int64         { return 1 << 40 }
 func (lookaheadSource) FillerStart() (int64, bool) { return 0, false }
 
-// vr9HeaderBlock hand-builds a headerSpan-byte VS-880EX header with a valid
+// vr9HeaderBlock hand-builds a vr9HeaderSpan-byte VS-880EX header with a valid
 // signature, a plausible filename, and the given marker flag (0 = real file
 // header, non-zero = song-boundary block).
 func vr9HeaderBlock(marker uint16) []byte {
-	hdr := make([]byte, headerSpan)
+	hdr := make([]byte, vr9HeaderSpan)
 	copy(hdr, sigVR9)
 	copy(hdr[offFilename:], "TAKE0100VR9")
 	binary.BigEndian.PutUint16(hdr[offMarker:], marker)
@@ -59,7 +59,7 @@ func vr5HeaderBlock(magic []byte) []byte {
 // plausible name, look-ahead) are covered too, so the whole predicate is pinned
 // without a fixture image.
 func TestVR9LayoutValidity(t *testing.T) {
-	lay := vr9{}.layout()
+	var lay cdLayout = vr9{}
 	const udoff, end = int64(firstFileHeader), int64(1 << 30)
 	src := lookaheadSource{} // look-ahead answers with plausible (non-signature) data
 
@@ -95,7 +95,7 @@ func TestVR9LayoutValidity(t *testing.T) {
 // `60 BF 51 28` magic at +0x245C (check 3), which is what rejects a markerless
 // song-boundary block whose stale per-file area lacks the magic.
 func TestVR5LayoutValidity(t *testing.T) {
-	lay := vr5{}.layout()
+	var lay cdLayout = vr5{}
 	const udoff, end = int64(firstFileHeader), int64(1 << 30)
 	src := lookaheadSource{}
 

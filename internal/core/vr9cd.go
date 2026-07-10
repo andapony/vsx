@@ -8,8 +8,6 @@ import (
 
 // VS-880EX header-block field offsets, from the block start (§5.4).
 const (
-	blockSize = 0x8000
-
 	offSongNumber = 0x160C // u16 BE
 	offSongName   = 0x160E // 12 B
 	offRateFormat = 0x161A // rate byte + format code
@@ -19,13 +17,9 @@ const (
 	offFileID     = 0x1634 // u16 BE
 	offSize       = 0x1652 // u32 LE
 
-	// headerSpan is how many bytes of a header block we must read to see every
+	// vr9HeaderSpan is how many bytes of a header block we must read to see every
 	// field above; +0x1656 covers the u32 size at 0x1652.
-	headerSpan = 0x1656
-
-	// firstFileHeader is the udoff of the first file header on an index-0 disc:
-	// block 0 is the archive header, block 0x8000 the second copy (§5.4).
-	firstFileHeader = 0x10000
+	vr9HeaderSpan = 0x1656
 )
 
 // vr9IdentityFields are the VS-880EX header byte ranges that a continuation
@@ -117,34 +111,35 @@ type vr9Event struct {
 // records each carry a v-track code, replayed at origin 12 (§3).
 type vr9 struct{}
 
-// layout supplies the VS-880EX CD archive layout (§5.4/§5.5) the shared chain
-// walk runs on: a header validated by its clear song-boundary marker flag
-// (check 4), a stored block count driving the chain step, and songs grouped by
-// the source SONG number the header carries.
-func (vr9) layout() cdLayout {
-	return cdLayout{
-		machineName:    "VR9",
-		sig:            sigVR9,
-		nameOff:        offFilename,
-		headerSpan:     headerSpan,
-		identityFields: vr9IdentityFields,
-		eventListRef:   "§6.2",
-		accept: func(hdr []byte) bool {
-			// check 4: a real header's marker flag is clear; a song-boundary
-			// block sets it.
-			return binary.BigEndian.Uint16(hdr[offMarker:]) == 0
-		},
-		parse: parseHeader,
-		blocks: func(hdr []byte, _ fileEntry) int64 {
-			// VR9 stores the data-block count in the header (§5.4).
-			return int64(binary.BigEndian.Uint16(hdr[offBlockCount:]))
-		},
-		group: groupSongs,
-		songNumber: func(_ cdSource, g songGroup, _ int) (int, []Deviation) {
-			// VR9 files carry their source SONG number in the header (§5.4).
-			return int(g.number), nil
-		},
-	}
+// The VS-880EX CD archive layout (§5.4/§5.5) the shared chain walk runs on: a
+// header validated by its clear song-boundary marker flag (check 4), a stored
+// block count driving the chain step, and songs grouped by the source SONG
+// number the header carries. Each method is one piece of the cdLayout seam, so
+// the compiler enforces that vr9 supplies them all.
+
+func (vr9) machineName() string                     { return "VR9" }
+func (vr9) sig() string                             { return sigVR9 }
+func (vr9) nameOff() int                            { return offFilename }
+func (vr9) headerSpan() int                         { return vr9HeaderSpan }
+func (vr9) identityFields() [][2]int                { return vr9IdentityFields }
+func (vr9) eventListRef() string                    { return "§6.2" }
+func (vr9) parse(hdr []byte, udoff int64) fileEntry { return parseHeader(hdr, udoff) }
+func (vr9) group(files []fileEntry) []songGroup     { return groupSongs(files) }
+
+// accept is the VR9 §5.5 gate (check 4): a real header's marker flag is clear; a
+// song-boundary block sets it.
+func (vr9) accept(hdr []byte) bool {
+	return binary.BigEndian.Uint16(hdr[offMarker:]) == 0
+}
+
+// blocks reads the data-block count the VR9 header stores (§5.4).
+func (vr9) blocks(hdr []byte, _ fileEntry) int64 {
+	return int64(binary.BigEndian.Uint16(hdr[offBlockCount:]))
+}
+
+// songNumber returns the source SONG number the VR9 header carries (§5.4).
+func (vr9) songNumber(_ cdSource, g songGroup, _ int) (int, []Deviation) {
+	return int(g.number), nil
 }
 
 // parseTimeline reduces a VS-880EX event log (§6.2/§8.2) to a machine-neutral
