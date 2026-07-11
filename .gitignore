@@ -10,3 +10,4 @@
 # Personal agent-skill tooling (symlinks + content); not part of the product
 .claude/skills/
 .agents/
+skills-lock.json
