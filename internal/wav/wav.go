@@ -58,7 +58,8 @@ func encode(channels [][]int32, sampleRate, bitDepth int) ([]byte, error) {
 	byteRate := sampleRate * blockAlign
 	dataSize := frames * blockAlign
 	// RIFF requires a trailing zero pad byte after any chunk whose payload is
-	// odd-length (here, 24-bit data with an odd total sample count). The pad is
+	// odd-length (here only mono 24-bit audio with an odd frame count — every
+	// other channel/depth combination gives an even blockAlign). The pad is
 	// counted in the RIFF chunk size but not in the data subchunk size.
 	pad := dataSize % 2
 	riffSize := 36 + dataSize + pad // everything after the first 8 bytes

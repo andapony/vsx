@@ -26,4 +26,4 @@ is authoritative (Appendix A is merely derived from it). See
   scratch; a single-language build re-derived from the spec yields one coherent,
   verifiable codebase and avoids importing unverified behaviour.
 - **Scope to a single slice** (codec-only, or CD-only) — rejected; the goal is
-  the whole HDD+CD → WAV pipeline (see ADR-0003 scope, forthcoming).
+  the whole HDD+CD → WAV pipeline (see [ADR-0003](./0003-scope-sources-machines-one-source-per-run.md) scope).

@@ -8,8 +8,8 @@ import (
 
 // SongKey is a song's stable, collision-proof identity within one Source.
 // Partition is the 1-based Roland partition ordinal on HDD (0 on CD, which has a
-// single archive); Ordinal is the SONGxxxx directory ordinal on HDD (unique per
-// partition by FAT construction) or the archive catalog number on CD.
+// single archive); Ordinal is this song's 0-based enumeration position within its
+// partition on HDD (unique by construction) or the archive catalog number on CD.
 type SongKey struct {
 	Partition int
 	Ordinal   int

@@ -1,17 +1,19 @@
-// Package vsfix builds synthetic Roland VS-880EX (VR9) "Song Copy Archive" CD
-// dumps in memory, byte-for-byte against ROLAND-VS-FORMAT-SPEC.md, so the
-// extraction pipeline can be tested without the out-of-repo media corpus
-// (ADR-0005). It is fixture support imported from _test.go files across
-// packages; it is deliberately a normal package (not _test) so several test
-// packages can share it.
+// Package vsfix builds synthetic Roland VS-1880 (VR5) and VS-880EX (VR9) "Song
+// Copy Archive" CD dumps in memory, byte-for-byte against
+// ROLAND-VS-FORMAT-SPEC.md, so the extraction pipeline can be tested without the
+// out-of-repo media corpus (ADR-0005). It is fixture support imported from
+// _test.go files across packages; it is deliberately a normal package (not
+// _test) so several test packages can share it.
 //
-// The builder emits an index-0, single-disc VR9 archive: an archive header
-// block (§5.2) whose per-file area is a stale-but-plausible entry (§5.5 case 1),
-// a second header copy (§5.5 case 2), then each song's files laid out
-// contiguously — every file preceded by its own 0x8000 header block (§5.4) —
-// with a marker "song-boundary" block (§5.5 case 3) between songs, and a
-// trailing TDI filler run (§10). Exercising all three §5.5 rejection cases is
-// the point: a correct walker must skip them.
+// This file is the VR9 builder; vr5.go is its VS-1880 counterpart, and setfix.go
+// / setfix_vr5.go cut a single-disc archive into a multi-disc backup set across a
+// §5.6 junction. Each single-disc builder emits an index-0 archive: an archive
+// header block (§5.2) whose per-file area is a stale-but-plausible entry (§5.5
+// case 1), a second header copy (§5.5 case 2), then each song's files laid out
+// contiguously — every file preceded by its own 0x8000 header block (§5.4) — with
+// a marker "song-boundary" block (§5.5 case 3) between songs, and a trailing TDI
+// filler run (§10, omittable for a truncated-rip fixture). Exercising all three
+// §5.5 rejection cases is the point: a correct walker must skip them.
 package vsfix
 
 import (

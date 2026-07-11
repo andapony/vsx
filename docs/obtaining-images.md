@@ -107,9 +107,12 @@ of milliseconds of audio. (One such sector exists in the reference corpus:
 ### How to verify a rip
 
 - **Run `vsx` and read stderr.** Best-effort mode reports a `§5` deviation for a
-  cooked rip and a `§10` deviation when a disc is missing its trailing TDI filler
-  (a **truncated** rip — re-rip it). Per-frame EDC checking that flags an
-  individual corrupt sector is planned (see the issue tracker).
+  cooked rip, a `§10` deviation when a disc is missing its trailing TDI filler
+  (a **truncated** rip — re-rip it), and a `§10` per-frame EDC deviation naming
+  the exact frame (or contiguous frame run) of any raw sector whose stored MODE1
+  EDC does not match its bytes — the physically corrupt sector the ripping chain
+  passes through silently. That last check runs only on a raw dump; a cooked rip
+  has thrown the EDC away.
 - **Check EDC independently.** A raw-image EDC/ECC checker such as
   [`edccchk`](https://github.com/claunia/edccchk) reports which sectors fail EDC,
   as MSF timestamps. Do **not** run an EDC/ECC *regenerator* (e.g. `ecm`-style

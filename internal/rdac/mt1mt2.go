@@ -457,25 +457,25 @@ func decodeMT2Frame12(d0 int, in []uint8, out []int) (unknown bool) {
 		patternStr := pattern12F
 		applyPattern12(in, out, patternStr)
 		shiftRound(out, 1)
-		// 4 linear
+		// 2 linear
 		interpolate2(d0, out)
 	case 15:
 		patternStr := pattern12F
 		applyPattern12(in, out, patternStr)
 		shiftRound(out, 2)
-		// 4 linear
+		// 2 linear
 		interpolate2(d0, out)
 	case 16:
 		patternStr := pattern12F
 		applyPattern12(in, out, patternStr)
 		shiftRound(out, 3)
-		// 4 linear
+		// 2 linear
 		interpolate2(d0, out)
 	case 17:
 		patternStr := pattern12F
 		applyPattern12(in, out, patternStr)
 		shiftRound(out, 4)
-		// 4 linear
+		// 2 linear
 		interpolate2(d0, out)
 
 		// Pattern 12G

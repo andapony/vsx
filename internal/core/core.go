@@ -197,7 +197,7 @@ type SongRef struct {
 // Take carries the resolved take/cluster metadata that produced a v-track's
 // audio: enough to locate and decode the underlying byte stream.
 type Take struct {
-	FirstCluster int    // starting cluster of the take
+	FirstCluster int    // the take's FileID: its start cluster on HDD, or the §5.7 renamed archive ID on CD
 	ClusterCount int    // number of clusters the take occupies
 	ClusterSize  int    // storage cluster size in bytes (for MT2 page-padding)
 	Format       Format // RDAC format code

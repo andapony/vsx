@@ -11,9 +11,10 @@ complicating the story for contributors and packagers.
 
 ## Distribution
 
-- **Now (private repo):** build-from-source, plus personal prebuilt static
-  binaries via `goreleaser`/Makefile for the platforms in use (darwin + linux,
-  amd64 + arm64). Pure Go means one static binary per platform, no cgo.
+- **Now (private repo):** build-from-source (the `go build` line in the README).
+  Personal prebuilt static binaries — via `goreleaser`/Makefile for the platforms
+  in use (darwin + linux, amd64 + arm64) — are the intended next step but not yet
+  wired up. Pure Go means one static binary per platform, no cgo.
 - **On OSS release (repo made public once stable and useful):** `go install`
   from the public module path becomes viable, plus GitHub Releases carrying
   cross-platform static binaries.

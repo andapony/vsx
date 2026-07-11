@@ -14,8 +14,8 @@ import "github.com/andapony/vsx/internal/cd"
 // whose data runs off the disc), reads the spanning remainder off the continuation
 // disc — whose block 0 repeats that file's header and whose first valid header
 // then sits at 0x8000 + remainder — and sets the disc's data end to
-// dataStart + (fileBlocks − remainderBlocks), the boundary that seams the file
-// flush. It returns the set of disc positions it reseamed exactly; a disc it
+// dataStart + (fileBlocks − remainderBlocks)×0x8000, the boundary that seams the
+// file flush. It returns the set of disc positions it reseamed exactly; a disc it
 // cannot resolve (no continuation disc, a header/identity mismatch, or an
 // out-of-range result) keeps the block-aligned fallback. It reads no take and
 // mutates only the set's segment boundaries, so a failure never corrupts a walk.
