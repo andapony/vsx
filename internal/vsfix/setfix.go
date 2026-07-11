@@ -16,8 +16,25 @@ import "encoding/binary"
 type VR9Set struct {
 	SetID           [4]byte
 	Songs           []Song
-	SpanFileID      uint16 // the take whose data crosses the junction
-	SpanAvailBlocks int    // whole 0x8000 data blocks of that take burned on disc 0
+	SpanFileID      uint16      // the take whose data crosses the junction
+	SpanAvailBlocks int         // whole 0x8000 data blocks of that take burned on disc 0
+	Disc0Trunc      *Disc0Trunc // when set, disc 0 is a truncated, filler-less rip (#31)
+}
+
+// Disc0Trunc turns disc 0 of a set into a truncated, filler-less rip (§10) for
+// the #31 regression: a non-terminal disc that lacks a trailing filler run and
+// whose user-data length is not a 0x8000 multiple, so a naive fallback would push
+// every later disc off the chain-walk grid and hide its songs.
+type Disc0Trunc struct {
+	// Junk over-counts disc 0 past its true data end: this many 0x8000 blocks of
+	// non-header bytes sit between the spanning file's last on-disc block and the
+	// dump's end. It is the residue a block-aligned fallback (Option A) splices
+	// into the spanning file and the junction reconstruction (Option B) drops.
+	Junk int
+	// TailFrames appends this many whole 2048-byte frames of a partial block, so
+	// disc 0's user-data length is not a 0x8000 multiple (the real rip was cut ten
+	// frames into a block).
+	TailFrames int
 }
 
 // tapeFileRec records where one file's header and data blocks sit in the tape,
@@ -65,7 +82,7 @@ func (s VR9Set) tape() ([][]byte, []tapeFileRec) {
 // behind a repeat of the file's header block.
 func (s VR9Set) BuildDiscsRaw() [][]byte {
 	blocks, recs := s.tape()
-	return cutDiscs(blocks, recs, s.SpanFileID, s.SpanAvailBlocks)
+	return cutDiscs(blocks, recs, s.SpanFileID, s.SpanAvailBlocks, s.Disc0Trunc)
 }
 
 // cutDiscs splits a tape of 0x8000 blocks into two raw disc dumps at a junction
@@ -73,8 +90,11 @@ func (s VR9Set) BuildDiscsRaw() [][]byte {
 // blocks up to the cut then a filler run (§10); disc 1 opens with a byte-exact
 // repeat of the span file's header block (disc-index field bumped) and resumes
 // the remaining data at 0x8000. The archive-header disc-index/total fields are
-// patched so each disc reads as its place in a two-disc set (§5.2).
-func cutDiscs(blocks [][]byte, recs []tapeFileRec, spanFileID uint16, spanAvailBlocks int) [][]byte {
+// patched so each disc reads as its place in a two-disc set (§5.2). When trunc is
+// non-nil, disc 0 is a truncated, filler-less rip instead (§10, #31): the filler
+// is dropped and the over-count residue is appended so its length falls off the
+// 0x8000 grid.
+func cutDiscs(blocks [][]byte, recs []tapeFileRec, spanFileID uint16, spanAvailBlocks int, trunc *Disc0Trunc) [][]byte {
 	sf, ok := findTapeFile(recs, spanFileID)
 	if !ok {
 		panic("vsfix: SpanFileID is not a file in the set")
@@ -93,10 +113,35 @@ func cutDiscs(blocks [][]byte, recs []tapeFileRec, spanFileID uint16, spanAvailB
 	setU16BE(rep, 0x28, 2)
 	disc1 := append([][]byte{rep}, cloneBlocks(blocks[cut:])...)
 
+	disc0ud := withFiller(disc0)
+	if trunc != nil {
+		disc0ud = truncatedUserData(disc0, trunc)
+	}
 	return [][]byte{
-		wrapRaw(withFiller(disc0)),
+		wrapRaw(disc0ud),
 		wrapRaw(withFiller(disc1)),
 	}
+}
+
+// truncatedUserData joins disc 0's blocks with no filler run (§10), then appends
+// the over-count residue: Junk whole 0x8000 blocks of non-header bytes followed by
+// a partial block of TailFrames 2048-byte frames, so the dump lacks a filler and
+// its user-data length is not a 0x8000 multiple (#31).
+func truncatedUserData(blocks [][]byte, trunc *Disc0Trunc) []byte {
+	ud := joinBlocks(blocks)
+	// The junk carries a distinctive non-zero pattern, not zeros: a block-aligned
+	// fallback (Option A) that keeps it splices these bytes into the spanning file,
+	// which a silent-take fixture would otherwise hide (junk-of-zeros decodes to the
+	// same silence as the true continuation). The junction reconstruction (Option B)
+	// must drop it. The pattern is not the archive signature, so the chain walk
+	// still rejects each junk block as a non-header.
+	junk := make([]byte, trunc.Junk*blockSize)
+	for i := range junk {
+		junk[i] = 0xDA
+	}
+	ud = append(ud, junk...)
+	ud = append(ud, make([]byte, trunc.TailFrames*udPerFR)...)
+	return ud
 }
 
 // findTapeFile returns the tape record for the file with the given FileID.
@@ -120,12 +165,18 @@ func splitBlocks(data []byte) [][]byte {
 
 // withFiller joins a disc's blocks and appends a two-block TDI filler run (§10).
 func withFiller(blocks [][]byte) []byte {
+	ud := joinBlocks(blocks)
+	for i := 0; i < 2; i++ {
+		ud = append(ud, fillerBlock()...)
+	}
+	return ud
+}
+
+// joinBlocks concatenates a disc's 0x8000 blocks into one user-data stream.
+func joinBlocks(blocks [][]byte) []byte {
 	var ud []byte
 	for _, b := range blocks {
 		ud = append(ud, b...)
-	}
-	for i := 0; i < 2; i++ {
-		ud = append(ud, fillerBlock()...)
 	}
 	return ud
 }

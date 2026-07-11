@@ -290,11 +290,13 @@ func linkSetDir(t *testing.T, g discGroup) string {
 // them clean is the correct expectation.
 
 // discsMissingFiller are corpus discs with no trailing §10 TDI filler run:
-// truncated/incomplete dumps whose data end the walk correctly falls back to
-// end-of-data for (with a warning). Keyed by basename.
+// truncated/incomplete dumps whose data end the walk recovers as a deviation —
+// block-aligned for a terminal or foreign junction, or reconstructed exactly from
+// the continuation disc when the span is genuine (§5.6, #31). Keyed by basename.
 var discsMissingFiller = map[string]string{
-	"vs-cd-7a.bin": "truncated dump (disc 0 of set c53305e5); no trailing §10 TDI filler run",
-	"vs-cd-8.bin":  "truncated dump (disc 0 of set f9b305d5); no trailing §10 TDI filler run",
+	"vs-cd-7a.bin":  "truncated dump (disc 0 of set c53305e5); no trailing §10 TDI filler run",
+	"vs-cd-8.bin":   "truncated dump (disc 0 of set f9b305d5); no trailing §10 TDI filler run",
+	"vs-cd-15a.bin": "truncated dump (disc 0 of set 6c1b099f, the issue #31 repro); no trailing §10 TDI filler run — its junction is reconstructed from disc 1 (§5.6)",
 }
 
 // setsWithForeignSpan are corpus backup sets whose continuation disc's block-0

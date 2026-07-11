@@ -8,8 +8,9 @@ package vsfix
 type VR5Set struct {
 	SetID           [4]byte
 	Songs           []VR5Song
-	SpanFileID      uint16 // the take whose data crosses the junction
-	SpanAvailBlocks int    // whole 0x8000 data blocks of that take burned on disc 0
+	SpanFileID      uint16      // the take whose data crosses the junction
+	SpanAvailBlocks int         // whole 0x8000 data blocks of that take burned on disc 0
+	Disc0Trunc      *Disc0Trunc // when set, disc 0 is a truncated, filler-less rip (#31)
 }
 
 // tape lays the VR5 archive out as 0x8000 blocks (no filler), mirroring
@@ -49,5 +50,5 @@ func (s VR5Set) tape() ([][]byte, []tapeFileRec) {
 // data at 0x8000.
 func (s VR5Set) BuildDiscsRaw() [][]byte {
 	blocks, recs := s.tape()
-	return cutDiscs(blocks, recs, s.SpanFileID, s.SpanAvailBlocks)
+	return cutDiscs(blocks, recs, s.SpanFileID, s.SpanAvailBlocks, s.Disc0Trunc)
 }
