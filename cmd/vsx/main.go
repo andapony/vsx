@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	"github.com/andapony/vsx/internal/core"
@@ -46,12 +47,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 	verbose := fs.Bool("v", false, "verbose: log each extracted v-track to stderr")
 	quiet := fs.Bool("q", false, "quiet: suppress deviations and the summary")
 	list := fs.Bool("list", false, "list the songs on the source and exit (no extraction)")
+	showVersion := fs.Bool("version", false, "print version information and exit")
 	var songs songSel
 	fs.Var(&songs, "song", "extract only the given song(s) by list key (repeatable; e.g. --song 2.7)")
 	fs.Usage = func() { usage(stderr, fs) }
 
 	if err := fs.Parse(args); err != nil {
 		return exitUsage // flag has already written usage/diagnostics to stderr
+	}
+	if *showVersion {
+		fmt.Fprintln(stdout, versionString())
+		return exitOK
 	}
 	sources := fs.Args()
 	if len(sources) < 1 {
@@ -335,6 +341,57 @@ func sanitize(name string) string {
 	name = strings.ReplaceAll(name, "/", "_")
 	name = strings.ReplaceAll(name, string(os.PathSeparator), "_")
 	return strings.TrimSpace(name)
+}
+
+// versionString renders the binary's version from the build info the Go
+// toolchain embeds: the module version for a `go install …@vX.Y.Z` build, or the
+// VCS revision and commit time (with a "-dirty" marker for uncommitted changes)
+// for a plain `go build` from a checkout. It falls back to "(unknown)" when no
+// build info is available.
+func versionString() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "vsx (unknown)"
+	}
+	version := info.Main.Version
+	if version == "" {
+		version = "(devel)"
+	}
+	// A tagged `go install …@vX.Y.Z` build yields a clean semver in Main.Version
+	// and carries no vcs.* settings, so it prints as "vsx v1.0.0". A `go build`
+	// from a checkout with tags already encodes the revision and time in a
+	// pseudo-version, so only the tag-less "(devel)" case needs the VCS detail
+	// appended.
+	if version != "(devel)" {
+		return "vsx " + version
+	}
+	var revision, when string
+	var dirty bool
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			revision = s.Value
+		case "vcs.time":
+			when = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	out := "vsx " + version
+	if revision != "" {
+		if len(revision) > 12 {
+			revision = revision[:12]
+		}
+		if dirty {
+			revision += "-dirty"
+		}
+		out += " (" + revision
+		if when != "" {
+			out += ", " + when
+		}
+		out += ")"
+	}
+	return out
 }
 
 func usage(w io.Writer, fs *flag.FlagSet) {

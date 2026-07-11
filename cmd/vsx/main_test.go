@@ -116,6 +116,15 @@ func TestNoArgsPrintsUsageAndExitsNonZero(t *testing.T) {
 	assert.Contains(t, strings.ToLower(stderr), "usage", "usage text goes to stderr")
 }
 
+// TestVersionFlagPrintsAndExitsClean verifies that --version prints a version
+// line to stdout and exits cleanly, without needing a source argument.
+func TestVersionFlagPrintsAndExitsClean(t *testing.T) {
+	code, stdout, stderr := runCLI("--version")
+	assert.Zero(t, code, "--version exits cleanly")
+	assert.True(t, strings.HasPrefix(stdout, "vsx "), "version line goes to stdout: %q", stdout)
+	assert.Empty(t, stderr, "no diagnostics on a version query")
+}
+
 // TestUnknownFlagExitsNonZero verifies that an unrecognized flag is a usage
 // error: non-zero exit with diagnostics on stderr and no manifest on stdout.
 func TestUnknownFlagExitsNonZero(t *testing.T) {
