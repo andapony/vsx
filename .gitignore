@@ -6,3 +6,7 @@
 
 # Claude Code worktrees (isolated workspaces, not shared)
 .claude/worktrees/
+
+# Personal agent-skill tooling (symlinks + content); not part of the product
+.claude/skills/
+.agents/
