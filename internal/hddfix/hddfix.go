@@ -17,9 +17,8 @@ import "encoding/binary"
 
 const (
 	sectorSize = 512
-	// mbrOffsets are the 12 Roland MBR partition-entry offsets (§4.1): the four
-	// standard entries first, then the two extended groups. A stock 4-entry
-	// parser sees only the first four and misses the 382–430 group.
+	// nMBREntries is the number of Roland MBR partition slots (§4.1): the four
+	// standard entries plus the two extended groups a stock 4-entry parser misses.
 	nMBREntries = 12
 )
 

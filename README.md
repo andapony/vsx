@@ -18,8 +18,9 @@ chain won't tell you on its own).
 > **Status:** extraction works end-to-end for both machines (VS-1880/VR5 and
 > VS-880EX/VR9) across all supported Sources — HDD live-disk images, single-disc
 > CD archives, and multi-disc CD backup sets (`§5.6` spanning) — with best-effort
-> and `--strict` modes, in-context deviation reporting, and optional `--stereo`
-> pairing (`§8.4`). Deferred: the HDD↔CD byte-identical cross-check (`§5.7`, a
+> and `--strict` modes, in-context deviation reporting, per-frame MODE1 EDC
+> corruption detection (`§10`), and optional `--stereo` pairing (`§8.4`).
+> Deferred: the HDD↔CD byte-identical cross-check (`§5.7`, a
 > ready skipped test slot pending matching media) and the JSON `--report` output
 > (v1.1).
 
@@ -77,6 +78,19 @@ enumeration index within that partition — e.g. `07.017 - LBL 4_19`), because
 the VS device's own song number is not unique across a multi-partition disk.
 CD sources keep the existing `NN - name` folders, since the catalog number is
 already unique there.
+
+## Flags
+
+| Flag | Effect |
+|---|---|
+| `--list` | print the source's song catalog to stdout and exit; no extraction |
+| `--song KEY` | extract only the given song(s) by list key (repeatable, or comma-separated) |
+| `-o DIR` | directory to write song folders into (default `.`) |
+| `--stereo` | pair adjacent matched mono tracks into one interleaved stereo WAV (`§8.4` heuristic) |
+| `--strict` | conformance gate: abort on the first deviation with no output |
+| `--as TYPE` | force the source type when detection is ambiguous (`hdd`\|`cd`\|`vr9`\|`vr5`) |
+| `-v` | verbose: log each extracted v-track to stderr |
+| `-q` | quiet: suppress deviations and the run summary |
 
 ## Layout
 

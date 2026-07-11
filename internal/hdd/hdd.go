@@ -40,9 +40,10 @@ type Volume struct {
 // Open probes the image's MBR and partition BPBs and returns a Volume when at
 // least one partition validates as a Roland FAT16 filesystem (§4.1). It reads
 // every one of the 12 Roland partition offsets and keeps the entries whose BPB
-// validates (OEM ID "Roland  ", 512-byte sectors, a power-of-two cluster size) —
-// the §4.1 detection, in its "probe all 12" equivalent form. An image with no
-// such partition is not a Roland disk: ErrNotRoland, so the caller can try CD.
+// validates (OEM ID "Roland  ", 512-byte sectors, a power-of-two cluster size),
+// keeping only the first entry per distinct start LBA — the §4.1 detection, in
+// its "probe all 12" equivalent form. An image with no such partition is not a
+// Roland disk: ErrNotRoland, so the caller can try CD.
 func Open(src io.ReaderAt, size int64) (*Volume, error) {
 	mbr := make([]byte, sectorSize)
 	if _, err := src.ReadAt(mbr, 0); err != nil {
