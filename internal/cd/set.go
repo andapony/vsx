@@ -83,6 +83,16 @@ func NewSet(discs []*Image) (*Set, error) {
 		end, ok := im.FillerStart()
 		if !ok {
 			end = im.UserDataLen()
+			// A disc whose filler is undetectable has no known data end (§10). For
+			// a non-terminal disc, round the fallback down to a 0x8000 block
+			// boundary so the next disc's segment — and every 0x8000-aligned file
+			// header on it — stays on the chain-walk grid (§5.4/§5.6); an unaligned
+			// length would shift the whole downstream disc off the grid and hide all
+			// its songs (#31). The last disc shifts no later segment, so its full
+			// length is kept to bound its own tail (best-effort trailing audio).
+			if i < len(discs)-1 {
+				end = end / blockSize * blockSize
+			}
 			s.missFiller = append(s.missFiller, i)
 		}
 		length := end - physStart
@@ -113,6 +123,32 @@ func (s *Set) Cooked() bool { return s.cooked }
 // MissingFiller returns the ordered disc positions (indices into the set) whose
 // dump lacks a trailing TDI filler run, so its data end had to be guessed (§10).
 func (s *Set) MissingFiller() []int { return s.missFiller }
+
+// SetDataEnd overrides the data end of disc position `disc` to the physical
+// user-data offset physDataEnd and recomputes every following segment's logical
+// start, so a caller that has reconstructed a truncated disc's true junction from
+// the continuation disc (§5.6) can reseam the set exactly — pulling the following
+// discs back onto the byte-exact boundary the missing filler (§10) left unknown,
+// and dropping the over-count residue the block-aligned fallback kept (#31). A
+// disc outside the set is ignored, and a value below the disc's physical start
+// clamps to an empty segment. It is meant only for a disc reported by
+// MissingFiller.
+func (s *Set) SetDataEnd(disc int, physDataEnd int64) {
+	if disc < 0 || disc >= len(s.segs) {
+		return
+	}
+	length := physDataEnd - s.segs[disc].physStart
+	if length < 0 {
+		length = 0
+	}
+	s.segs[disc].length = length
+	var total int64
+	for i := range s.segs {
+		s.segs[i].logStart = total
+		total += s.segs[i].length
+	}
+	s.total = total
+}
 
 // ReadUserData returns n bytes of the stitched stream starting at logical offset
 // udoff, crossing disc junctions transparently. A read that runs past the end of

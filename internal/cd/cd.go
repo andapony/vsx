@@ -12,6 +12,7 @@ package cd
 import (
 	"fmt"
 	"io"
+	"sync"
 )
 
 const (
@@ -27,6 +28,10 @@ type Image struct {
 	src    io.ReaderAt
 	size   int64 // physical dump length in bytes
 	cooked bool  // true = 2048-byte-sector dump with no frame wrapper
+
+	fillerOnce sync.Once
+	fillerAt   int64
+	fillerOK   bool
 }
 
 // New builds an Image over a dump of the given physical size. A size that is a
@@ -69,7 +74,18 @@ const blockSize = 0x8000
 // spanning arithmetic are measured against, not the end of the dump. It scans
 // 0x8000-aligned offsets for the first filler frame. The second result is false
 // when no filler run is present, which §10 flags as a truncated/incomplete rip.
+//
+// The scan is memoized: on a filler-less disc it reads the whole dump (a truncated
+// rip has no filler to stop on), and set assembly asks more than once — NewSet to
+// bound the disc, then the junction reconstruction to re-walk it (§5.6, #31) — so
+// the result is computed once per Image.
 func (im *Image) FillerStart() (int64, bool) {
+	im.fillerOnce.Do(func() { im.fillerAt, im.fillerOK = im.scanFillerStart() })
+	return im.fillerAt, im.fillerOK
+}
+
+// scanFillerStart is the one-time filler scan behind FillerStart.
+func (im *Image) scanFillerStart() (int64, bool) {
 	end := im.UserDataLen()
 	for udoff := int64(0); udoff+userDataSize <= end; udoff += blockSize {
 		frame, err := im.ReadUserData(udoff, userDataSize)

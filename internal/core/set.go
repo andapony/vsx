@@ -116,9 +116,19 @@ func openBackupSet(discs []discInput, opts Options) (*assembledSet, error) {
 		closeDiscs(ordered)
 		return nil, fmt.Errorf("core: %w", err)
 	}
+	reseamed := reseamTruncatedJunctions(set, imgs, formatFor(ordered[0].machine))
 	for _, pos := range set.MissingFiller() {
-		devs = append(devs, Deviation{Location: ordered[pos].name(), SpecRef: "§10", Severity: SeverityError,
-			Message: fmt.Sprintf("disc index %d lacks a trailing TDI filler run; its data end was estimated, which may corrupt a spanned file", ordered[pos].index)})
+		switch {
+		case reseamed[pos]:
+			devs = append(devs, Deviation{Location: ordered[pos].name(), SpecRef: "§10", Severity: SeverityWarning,
+				Message: fmt.Sprintf("disc index %d lacks a trailing TDI filler run; its data end was reconstructed from the continuation disc's junction (§5.6), so later discs and the spanning file are recovered", ordered[pos].index)})
+		case pos < len(ordered)-1:
+			devs = append(devs, Deviation{Location: ordered[pos].name(), SpecRef: "§10", Severity: SeverityError,
+				Message: fmt.Sprintf("disc index %d lacks a trailing TDI filler run; its data end was estimated to a block boundary so later discs still enumerate, but the file spanning the junction may be corrupt", ordered[pos].index)})
+		default:
+			devs = append(devs, Deviation{Location: ordered[pos].name(), SpecRef: "§10", Severity: SeverityError,
+				Message: fmt.Sprintf("disc index %d lacks a trailing TDI filler run; its data end was estimated, which may corrupt a spanned file", ordered[pos].index)})
+		}
 	}
 
 	return &assembledSet{
