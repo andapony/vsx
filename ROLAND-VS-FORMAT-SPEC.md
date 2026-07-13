@@ -102,8 +102,14 @@ skipped. Take audio streams have **no header** — decoding starts at byte 0 of 
 - **Timeline origin:** VS-1880 places timeline zero at frame 0. **VS-880EX places timeline zero
   at frame 12** — origin *audio* events have StartFrame = 12, not 0. Subtract 12 when computing
   sample positions on VR9. The rule holds for normal records only: erase/tombstone records
-  (FileID = 0 and/or flag byte = 1, §7/§8.2) legitimately carry StartFrame = 0. (Unverified
-  whether this is a fixed 192-sample preroll; treat as origin=12.)
+  (FileID = 0 and/or flag byte = 1, §7/§8.2) legitimately carry StartFrame = 0. The origin is
+  machine-verified as a real 12-frame preroll on a shared absolute timeline, not an artifact
+  of the observed songs: when a VS-1880 imports a VR9 song it keeps StartFrame values
+  unchanged on its frame-0 timeline, so every imported v-track begins exactly 192 samples
+  later than the origin-subtracted VR9 extraction and is sample-identical thereafter
+  (verified on a corpus song present in both a VR9 archive and two later VR5 archives).
+  Subtracting 12 therefore aligns VR9 output to first-possible-audio; prepend 12 frames of
+  silence to reproduce Roland's own conversion alignment.
 
 ---
 
@@ -170,6 +176,20 @@ skip these; they do occur on real VS disks that have been touched by a PC), firs
 u16 LE @+0x1A, file size u32 LE @+0x1C. Subdirectories begin with the usual `.` and `..`
 entries.
 
+**Directory timestamps are firmware constants, not history.** The standard FAT16 time/date
+fields (creation @+0x0E, access date @+0x12, write @+0x16) carry no per-file chronology: VS
+firmware zeroes creation/access and writes one **fixed constant** into the write stamp —
+identical to the second across every entry that machine writes. Observed constants:
+`2000-03-29 09:19:52` on all 669 entries of the verified VS-880EX image (both partitions),
+`2000-02-17 23:59:00` on all 1,860 VR5 entries of the verified VS-1880 image, and
+`1998-07-31 11:27:52` on one of that image's VR9 partitions (an older machine or firmware,
+§12). The constant per machine makes the stamp useless as a date but useful as provenance: on
+a multi-machine disk it records which machine last wrote each entry — the VS-1880 image's VR9
+partitions keep their originating 880-family constants except for the handful of entries the
+VS-1880 itself rewrote, which carry its constant instead. Entries bearing any other (often
+impossible) values, or populated creation/access fields, are foreign-OS litter from the same
+PC/Mac mounts that leave LFN entries.
+
 The Roland quirk — **16-bit byte-pair swapping**:
 - **Root directory**: normal (no swap).
 - **Subdirectory entries**: every 32-byte directory entry is byte-pair swapped before parsing.
@@ -210,6 +230,28 @@ takes by directory lookup** — format the event's cluster field as `TAKE%04X.VR
 entry in the song directory, and follow the FAT chain from the entry's first-cluster field.
 Following the FAT directly from the event's cluster value silently reads wrong or free clusters
 on every copied song (88 events on the verified image would dangle).
+
+The verified VS-880EX image is the opposite extreme of that census: **0 of 500 takes** are
+relocated — every take file sits at the cluster its name encodes, so no song on that disk was
+ever Song-Copied onto it. Together the two censuses make take naming a provenance tool: an
+all-in-place song is original to its disk, and because a **VR9** CD archive stores each take
+under its on-disk name (§5.7 — VR5 archives renumber, below), the take names inside such an
+archive fingerprint the exact disk state it was cut from. Matching names plus an all-in-place
+source FAT establish the copy direction disk → archive (verified: all nine takes of the 880EX
+image's song `BC` appear by name in the `VS-8EXECR02` set whose catalog entry is
+byte-identical to that song's `SONG.VR9`).
+
+The name fingerprint is VR9-only. A VR5 archive renumbers every take into the archive's
+sequential cluster space (§7), so its take names match no disk's — on verified media the
+overlap between a song's HDD names and its own VR5 archive names is chance collisions
+(1-of-46, 1-of-39). Cross-media identity for VR5 songs comes from timestamps instead: the
+`SONG.VR5` **created stamp** (§4.4) survives copy, re-save, and archiving — on the verified
+VS-1880 image two partition-4 songs match two catalog entries of a later `VS1880EXR06` set to
+the second, every common v-track extracting bit-identical even though the archive postdates
+the image's disk state (later last-saved stamps, three v-tracks the disk copies lack). The
+per-record creation timestamps (§7, +0x28) refine identity to individual takes: a take's
+first event dates its recording, and simultaneously-recorded takes share one stamp. VR9 has
+no timestamps anywhere, leaving take names as its only fingerprint.
 
 ### 4.4 SONG.VRx
 
@@ -723,9 +765,12 @@ whose final disc lacks the filler and whose last file is truncated is missing a 
   FileID = 0 records are) — none observed; every verified VR5 timeline record references a real
   take.
 - Cluster-allocation stride for >2 simultaneously-recorded takes.
-- Whether VR9 origin = 12 is a fixed preroll or an artifact of the observed songs.
 - The 4-byte version/flags pair carried from SONG into catalogs (second u16 typically `00 0X`,
   first u16 varies widely; values vary per song).
+- The `SONG.VRx` +0x04 number ("source folder number", §4.4) is neither unique nor stable —
+  three songs on one verified VS-880EX partition claim number 7, and one song's number changed
+  (5 → 2) between an archive snapshot and a later save of the same song. Its exact semantics
+  are unknown; never key song identity on it.
 - The VR9 header-block tag at +0x164C (constant within a song, but the same value recurs across
   songs and across unrelated backup sets; only two values observed) and the per-song u16 at
   +0x161C / the udoff-0xFCA table (≈ song size in 0x8000 blocks; exact formula unknown).
@@ -745,6 +790,9 @@ whose final disc lacks the filler and whose last file is truncated is missing a 
 - M24 page-padding behavior (§2) — no M24 media in the verification set.
 - The MBR partition-offset group 286/302/318/334 (§4.1): asserted by the same layout rule as
   the verified 382–430 group, but unpopulated (all-zero) on all verified media.
+- The directory write-stamp constants (§4.2): what the fixed values encode (firmware build
+  dates?), and which machine wrote `1998-07-31 11:27:52` — the constant on one of the VS-1880
+  image's VR9 partitions (a VS-880, or an earlier VS-880EX firmware).
 - Everything VR6/VS-1680: assumed VR5-like, unverified (§1).
 
 ---
