@@ -62,6 +62,15 @@ vsx --song 2.7 image.hdd
 vsx --song 2.7 --song 3.1 image.hdd
 ```
 
+Combining `--list` with `--song KEY` prints a song's per-v-track detail —
+track, v-track, event count, length, VR5 first/last event timestamps, and
+name — without extracting, one tab-separated row per populated v-track (led by
+the song key), the song's own metadata on the heading line:
+
+```sh
+vsx --list --song 2.7 image.hdd
+```
+
 A source is an HDD image, a single CD dump, a directory of one backup set's
 disc dumps, **or several disc files named together** — the last is handy for a
 multi-disc set you haven't put in a folder. The same `--list`/`--song` work on

@@ -81,13 +81,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *list {
+		// --list with --song is the verbose per-song view (#36): the selected
+		// songs' per-v-track breakdown. Without --song it is the whole catalog.
+		if len(songs.keys) > 0 {
+			details, devs, err := detailSources(sources, core.Options{As: override})
+			if err != nil {
+				fmt.Fprintf(stderr, "vsx: %v\n", err)
+				return exitError
+			}
+			return runDetail(details, songs.keys, devs, stdout, stderr)
+		}
 		catalog, devs, err := listSources(sources, core.Options{As: override})
 		if err != nil {
 			fmt.Fprintf(stderr, "vsx: %v\n", err)
 			return exitError
-		}
-		if len(songs.keys) > 0 {
-			fmt.Fprintln(stderr, "vsx: --song ignored with --list")
 		}
 		return runList(catalog, devs, stdout, stderr)
 	}
@@ -124,6 +131,16 @@ func listSources(paths []string, opts core.Options) ([]core.SongInfo, []core.Dev
 		return core.List(paths[0], opts)
 	}
 	return core.ListSet(paths, opts)
+}
+
+// detailSources dispatches Detail over one source path or DetailSet over several
+// disc-file paths grouped as one multi-disc backup set (§5.6) — the verbose
+// per-song view's counterpart to listSources.
+func detailSources(paths []string, opts core.Options) ([]core.SongDetail, []core.Deviation, error) {
+	if len(paths) == 1 {
+		return core.Detail(paths[0], opts)
+	}
+	return core.DetailSet(paths, opts)
 }
 
 // extractSources dispatches Extract over one source path or ExtractSet over
@@ -401,6 +418,7 @@ func usage(w io.Writer, fs *flag.FlagSet) {
 	fmt.Fprint(w, "            directory of one set's disc dumps, or several disc-dump\n")
 	fmt.Fprint(w, "            files given directly (multi-disc, §5.6)\n\n")
 	fmt.Fprint(w, "  vsx --list <source>          list the songs on a source (no extraction)\n")
+	fmt.Fprint(w, "  vsx --list --song 2.7 <src>  show a song's per-v-track detail (no extraction)\n")
 	fmt.Fprint(w, "  vsx --song 2.7 <source>      extract only the given song(s)\n")
 	fmt.Fprint(w, "  vsx --list a.bin b.bin       a multi-disc set given as separate files\n\n")
 	fmt.Fprint(w, "flags:\n")

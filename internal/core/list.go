@@ -46,14 +46,32 @@ func (s SongInfo) Duration() time.Duration {
 }
 
 // List enumerates a Source's songs without decoding audio. It is the thin path
-// adapter over listReader: it opens the file(s) and delegates. It mirrors
-// Extract's identify/dispatch (sharing identifyReader and openBackupSet so the
-// two paths cannot drift), then summarises each song straight from its event
-// list — the populated v-track count and timeline length are both derivable
-// from the events alone (through the same vtrackStats rule buildVTrack uses,
-// §8), so no take is ever read or decoded and no Decoder is ever constructed.
-// This makes listing a multi-gigabyte HDD image a matter of seconds.
+// adapter over enumerateSource, reducing each parsed song to a catalog entry: the
+// populated v-track count and timeline length are both derivable from the events
+// alone (through the same vtrackStats rule buildVTrack uses, §8), so no take is
+// ever read or decoded and no Decoder is ever constructed. This makes listing a
+// multi-gigabyte HDD image a matter of seconds.
 func List(sourcePath string, opts Options) ([]SongInfo, []Deviation, error) {
+	return enumerateSource(sourcePath, opts, parsedSong.songInfo)
+}
+
+// Detail enumerates a Source's songs into the verbose per-song view (#36): one
+// row per populated v-track, with its event count, length, and — on VR5 — the
+// first/last event timestamps. It runs the identical prologue List does (the same
+// parsed timeline, so its v-track set and lengths agree with List and Extract by
+// construction) and, like List, decodes no take. Callers narrow the result to the
+// songs they want by key; core enumerates them all.
+func Detail(sourcePath string, opts Options) ([]SongDetail, []Deviation, error) {
+	return enumerateSource(sourcePath, opts, parsedSong.detail)
+}
+
+// enumerateSource is the path adapter both List and Detail sit on: it opens the
+// file (or, for a directory, the disc-file set) and reduces every parsed song
+// with reduce — parsedSong.songInfo for the catalog, parsedSong.detail for the
+// verbose view — so the two views share one identify/dispatch and cannot drift.
+// It mirrors Extract's identify/dispatch (sharing identifyReader and
+// openBackupSet), and never constructs a Decoder.
+func enumerateSource[T any](sourcePath string, opts Options, reduce func(parsedSong) T) ([]T, []Deviation, error) {
 	info, err := os.Stat(sourcePath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("core: stat source: %w", err)
@@ -63,7 +81,7 @@ func List(sourcePath string, opts Options) ([]SongInfo, []Deviation, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("core: reading directory %q: %w", sourcePath, err)
 		}
-		return listSet(paths, opts)
+		return enumerateSetReader(discInputsFromPaths(paths), opts, reduce)
 	}
 
 	f, err := os.Open(sourcePath)
@@ -71,20 +89,46 @@ func List(sourcePath string, opts Options) ([]SongInfo, []Deviation, error) {
 		return nil, nil, fmt.Errorf("core: opening source: %w", err)
 	}
 	defer f.Close()
-	return listReader(f, info.Size(), opts)
+	return enumerateReader(f, info.Size(), opts, reduce)
 }
 
-// listReader is the ReaderAt entry List sits on: it identifies a single Source
-// from its bytes and summarises each song without reading or decoding a take —
-// so no Decoder is ever needed. It reads but does not own r.
+// ListSet treats the given disc-image files as one multi-disc CD backup set
+// (§5.6) — the same grouping a directory of those files gets — and enumerates
+// its songs. Use it when the discs are passed as separate paths rather than a
+// folder.
+func ListSet(paths []string, opts Options) ([]SongInfo, []Deviation, error) {
+	return enumerateSetReader(discInputsFromPaths(paths), opts, parsedSong.songInfo)
+}
+
+// DetailSet is Detail's multi-disc counterpart: the verbose per-song view over a
+// backup set given as separate disc files (§5.6).
+func DetailSet(paths []string, opts Options) ([]SongDetail, []Deviation, error) {
+	return enumerateSetReader(discInputsFromPaths(paths), opts, parsedSong.detail)
+}
+
+// listReader is the single-Source ReaderAt entry the List reduction sits on; it
+// is retained as a thin wrapper so the test harness can list an in-memory image.
 func listReader(r io.ReaderAt, size int64, opts Options) ([]SongInfo, []Deviation, error) {
+	return enumerateReader(r, size, opts, parsedSong.songInfo)
+}
+
+// listSetReader is the backup-set counterpart to listReader, retained for the
+// test harness.
+func listSetReader(discs []discInput, opts Options) ([]SongInfo, []Deviation, error) {
+	return enumerateSetReader(discs, opts, parsedSong.songInfo)
+}
+
+// enumerateReader identifies a single Source from its bytes and reduces each of
+// its songs with reduce, without reading or decoding a take — so no Decoder is
+// ever needed. It reads but does not own r.
+func enumerateReader[T any](r io.ReaderAt, size int64, opts Options, reduce func(parsedSong) T) ([]T, []Deviation, error) {
 	id, err := identifyReader(r, size, opts)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	if id.isHDD {
-		songs, devs := listHDD(id.vol)
+		songs, devs := mapHDDSongs(id.vol, reduce)
 		return songs, devs, nil
 	}
 
@@ -96,29 +140,15 @@ func listReader(r io.ReaderAt, size int64, opts Options) ([]SongInfo, []Deviatio
 	if mf == nil {
 		return nil, nil, fmt.Errorf("core: source identified but not yet supported by this build; machine=%v", id.machine)
 	}
-	songs, sdevs := listCD(id.img, mf)
+	songs, sdevs := mapCDSongs(id.img, mf, reduce)
 	devs = append(devs, sdevs...)
 	return songs, devs, nil
 }
 
-// ListSet treats the given disc-image files as one multi-disc CD backup set
-// (§5.6) — the same grouping a directory of those files gets — and enumerates
-// its songs. Use it when the discs are passed as separate paths rather than a
-// folder.
-func ListSet(paths []string, opts Options) ([]SongInfo, []Deviation, error) {
-	return listSet(paths, opts)
-}
-
-// listSet is the path adapter for a multi-disc backup set: it opens each disc
-// file into a byte input and delegates to listSetReader.
-func listSet(paths []string, opts Options) ([]SongInfo, []Deviation, error) {
-	return listSetReader(discInputsFromPaths(paths), opts)
-}
-
-// listSetReader enumerates disc byte-inputs as one multi-disc backup set (§5.6),
-// grouping them exactly as extractSetReader does, then summarises each song over
-// the stitched reader without decoding any take.
-func listSetReader(discs []discInput, opts Options) ([]SongInfo, []Deviation, error) {
+// enumerateSetReader reduces the songs of a multi-disc backup set (§5.6),
+// grouping the disc byte-inputs exactly as extractSetReader does, over the
+// stitched reader and without decoding any take.
+func enumerateSetReader[T any](discs []discInput, opts Options, reduce func(parsedSong) T) ([]T, []Deviation, error) {
 	if opts.As.kind == kindHDD {
 		closeInputs(discs)
 		return nil, nil, errHDDBackupSet()
@@ -138,7 +168,7 @@ func listSetReader(discs []discInput, opts Options) ([]SongInfo, []Deviation, er
 	if mf == nil {
 		return nil, nil, fmt.Errorf("core: backup set machine not supported by this build; machine=%v", set.machine)
 	}
-	songs, sdevs := listCD(set.reader, mf)
+	songs, sdevs := mapCDSongs(set.reader, mf, reduce)
 	devs = append(devs, sdevs...)
 	return songs, devs, nil
 }
@@ -163,30 +193,23 @@ func summarizeVTracks(st songTimeline) (vtracks, frames int) {
 	return vtracks, frames
 }
 
-// listHDD enumerates a Roland VS live disk's songs and summarises each from
-// its event list, reusing hdd.Volume.Songs and the SONG-file/EVENTLST reads
-// extractHDDSong performs but never resolving or decoding a take.
-func listHDD(vol *hdd.Volume) ([]SongInfo, []Deviation) {
+// mapHDDSongs enumerates a Roland VS live disk's songs and reduces each with
+// reduce, reusing hdd.Volume.Songs and the same parseHDDSong prologue
+// extractHDDSong runs — so List and Extract report identical prologue deviations
+// and agree on the v-track count and length by construction — but never resolving
+// or decoding a take, and constructing no Decoder.
+func mapHDDSongs[T any](vol *hdd.Volume, reduce func(parsedSong) T) ([]T, []Deviation) {
 	songs, err := vol.Songs()
 	if err != nil {
 		return nil, []Deviation{{Location: "disk", SpecRef: "§4", Severity: SeverityError,
 			Message: fmt.Sprintf("enumerating HDD songs: %v", err)}}
 	}
-	var out []SongInfo
+	var out []T
 	var devs []Deviation
 	for _, s := range songs {
-		info, sdevs := summarizeHDDSong(s)
+		ps, _, sdevs := parseHDDSong(s)
 		devs = append(devs, sdevs...)
-		out = append(out, info)
+		out = append(out, reduce(ps))
 	}
 	return out, devs
-}
-
-// summarizeHDDSong reduces one HDD song to a catalog entry through the same
-// parseHDDSong prologue extractHDDSong runs, then summarises the neutral timeline
-// — so the two report identical prologue deviations and agree on the v-track
-// count and length by construction. It decodes no take and constructs no Decoder.
-func summarizeHDDSong(song hdd.Song) (SongInfo, []Deviation) {
-	ps, _, devs := parseHDDSong(song)
-	return ps.songInfo(), devs
 }

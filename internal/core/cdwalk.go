@@ -200,33 +200,26 @@ func extractCDSong(img cdSource, mf machineFormat, g songGroup, number int, ndev
 	return tracks, devs
 }
 
-// listCD enumerates a CD archive's songs for one machine and summarises each from
-// its event list, reusing the same chain walk and grouping extractCD uses but
-// never resolving or decoding a take. It is the single list path both machines
-// share.
-func listCD(img cdSource, mf machineFormat) ([]SongInfo, []Deviation) {
+// mapCDSongs enumerates a CD archive's songs for one machine and reduces each
+// with reduce, reusing the same chain walk, grouping, and parseCDSong prologue
+// extractCD uses — so List, Detail, and Extract report identical prologue
+// deviations and agree on the timeline by construction — but never resolving or
+// decoding a take. It is the single CD enumeration both the catalog and the
+// verbose views share.
+func mapCDSongs[T any](img cdSource, mf machineFormat, reduce func(parsedSong) T) ([]T, []Deviation) {
 	files, devs, err := walkCD(img, mf)
 	if err != nil {
 		devs = append(devs, Deviation{Location: "disc", SpecRef: "§5.4", Severity: SeverityError,
 			Message: fmt.Sprintf("walking archive: %v", err)})
 		return nil, devs
 	}
-	var songs []SongInfo
+	var songs []T
 	for i, g := range mf.group(files) {
 		number, ndevs := mf.songNumber(img, g, i)
 		key := cdSongKey(number)
-		info, sdevs := summarizeCDSong(img, mf, g, number, key, ndevs)
+		ps, sdevs := parseCDSong(img, mf, g, number, key, ndevs)
 		devs = append(devs, sdevs...)
-		songs = append(songs, info)
+		songs = append(songs, reduce(ps))
 	}
 	return songs, devs
-}
-
-// summarizeCDSong reduces one CD song to a catalog entry through the same
-// parseCDSong prologue extractCDSong runs, then summarises the neutral timeline —
-// so the two report identical prologue deviations and agree on the v-track count
-// and length by construction. It decodes no take.
-func summarizeCDSong(img cdSource, mf machineFormat, g songGroup, number int, key SongKey, ndevs []Deviation) (SongInfo, []Deviation) {
-	ps, devs := parseCDSong(img, mf, g, number, key, ndevs)
-	return ps.songInfo(), devs
 }

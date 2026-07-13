@@ -30,6 +30,49 @@ func runList(songs []core.SongInfo, devs []core.Deviation, stdout, stderr io.Wri
 	return exitOK
 }
 
+// runDetail renders the verbose per-song view (#36) for the songs the user
+// selected with --song: a human-facing heading per song on stderr (its identity
+// and the song-level §4.4 timestamps), then a tab-separated row per populated
+// v-track on stdout, each led by the song key so the machine-readable rows stay
+// unambiguous even when several songs are listed. Every v-track row carries its
+// track/v-track, event count, length, and the first/last event timestamps (§7,
+// the placeholder on VR9). Selected keys that match no song are noted on stderr.
+func runDetail(details []core.SongDetail, keys []core.SongKey, devs []core.Deviation, stdout, stderr io.Writer) int {
+	want := make(map[core.SongKey]bool, len(keys))
+	for _, k := range keys {
+		want[k] = true
+	}
+	// Narrow labels stay ≤7 chars (share tab stops); the event-timestamp labels
+	// are padded to the timestamp width so those wide columns align too (#33/#34).
+	fmt.Fprintf(stderr, "SONG\tTRACK\tVTRK\tEVENTS\tLENGTH\t%s\t%s\tNAME\n",
+		padStamp("FIRST"), padStamp("LAST"))
+
+	found := make(map[core.SongKey]bool, len(keys))
+	for _, d := range details {
+		if !want[d.Info.Key] {
+			continue
+		}
+		found[d.Info.Key] = true
+		fmt.Fprintf(stderr, "# song %s %q [%s] — created %s, saved %s, modified %s\n",
+			d.Info.Key.String(), d.Info.Name, d.Info.Machine,
+			fmtStamp(d.Info.Created), fmtStamp(d.Info.Saved), fmtStamp(d.Info.Modified))
+		for _, tr := range d.Tracks {
+			fmt.Fprintf(stdout, "%s\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n",
+				d.Info.Key.String(), tr.Track, tr.VTrack, tr.Events, mmss(tr.Duration(d.Info.SampleRate)),
+				padStamp(fmtStamp(tr.First)), padStamp(fmtStamp(tr.Last)), tr.Name)
+		}
+	}
+	for _, k := range keys {
+		if !found[k] {
+			fmt.Fprintf(stderr, "vsx: no song %s on this source\n", k.String())
+		}
+	}
+	for _, d := range devs {
+		fmt.Fprintln(stderr, d)
+	}
+	return exitOK
+}
+
 // stampWidth is the fixed column width a rendered timestamp occupies:
 // len("2006-01-02 15:04:05"). Every timestamp cell (dated or placeholder) and its
 // header label are padded to this width so a single tab still lands the next

@@ -72,3 +72,38 @@ func TestListFlagPrintsTabSeparatedCatalog(t *testing.T) {
 	assert.Equal(t, "SONG ONE", fields[8]) // name last (twoSongTracerDisc song 1 is "SONG ONE")
 	assert.NotContains(t, stdout, ".wav")  // nothing extracted
 }
+
+// TestListSongRendersPerVTrackDetail pins the verbose per-song view (#36):
+// `--list --song KEY` shows the selected song's per-v-track breakdown — the song
+// heading on stderr, one key-led, tab-separated, tab-aligned row per v-track on
+// stdout — and, on a VR9 source (no event timestamps), the "-" placeholder.
+func TestListSongRendersPerVTrackDetail(t *testing.T) {
+	src := writeDisc(t, twoSongTracerDisc())
+	code, stdout, stderr := runCLI("--list", "--song", "1", src)
+	require.Equal(t, exitOK, code, "stderr: %s", stderr)
+
+	// The song is named in the heading on stderr, never on the machine-readable
+	// stdout rows, and no audio is written.
+	assert.Contains(t, stderr, "SONG ONE")
+	assert.NotContains(t, stdout, ".wav")
+
+	// Trim only the trailing newline, not per-row whitespace: a default v-track's
+	// NAME is the empty last column, so a row legitimately ends in a tab.
+	rows := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	require.NotEmpty(t, rows)
+	for _, r := range rows {
+		fields := strings.Split(r, "\t")
+		require.Len(t, fields, 8)                          // SONG TRACK VTRK EVENTS LENGTH FIRST LAST NAME
+		assert.Equal(t, "1", fields[0])                    // every row is led by the selected song key
+		assert.Equal(t, "-", strings.TrimSpace(fields[5])) // VR9: no event stamps
+		assert.Equal(t, "-", strings.TrimSpace(fields[6]))
+	}
+
+	// Header (first stderr line) and every data row share tab stops (#33 applied
+	// to the detail table).
+	header := strings.SplitN(stderr, "\n", 2)[0]
+	want := tabColumnStarts(header)
+	for _, r := range rows {
+		assert.Equal(t, want, tabColumnStarts(r), "detail row %q shares the header's tab stops", r)
+	}
+}
