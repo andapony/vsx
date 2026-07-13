@@ -123,3 +123,17 @@ func TestListModifiedZeroWithoutStampedEvents(t *testing.T) {
 	assert.False(t, songs[0].Created.IsZero(), "header stamps are still present")
 	assert.True(t, songs[0].Modified.IsZero(), "no stamped event ⇒ Modified is the placeholder")
 }
+
+// TestListModifiedZeroWithNoEvents pins the AC's distinct "song with zero events"
+// case: a VR5 song with an empty timeline (no v-track entries at all) still lists,
+// with its header stamps present but Modified the zero placeholder.
+func TestListModifiedZeroWithNoEvents(t *testing.T) {
+	disc := vsfix.VR5Disc{SetID: [4]byte{5, 5, 5, 5}, Songs: []vsfix.VR5Song{
+		{Number: 20, Name: "EMPTY", Created: tsCreated, Saved: tsSaved}, // no VTracks, no Takes
+	}}
+	songs, _ := mustListBytes(t, disc.BuildRaw(), Options{})
+	require.Len(t, songs, 1)
+	assert.Equal(t, 0, songs[0].VTracks, "no populated v-tracks")
+	assert.Equal(t, tsCreated, songs[0].Created, "header stamps still present")
+	assert.True(t, songs[0].Modified.IsZero(), "zero events ⇒ Modified is the placeholder")
+}

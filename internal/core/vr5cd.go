@@ -201,7 +201,7 @@ func (vr5) songStamps(img cdSource, g songGroup) (created, saved time.Time) {
 		if err != nil {
 			break
 		}
-		return decodeStamp(headerStamp(content, 0x14)), decodeStamp(headerStamp(content, 0x1C))
+		return decodeSongStamps(content)
 	}
 	return time.Time{}, time.Time{}
 }

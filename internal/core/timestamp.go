@@ -29,3 +29,29 @@ func decodeStamp(b []byte) time.Time {
 	day, month := int(b[4]), int(b[5])
 	return time.Date(year, time.Month(month), day, hour, minute, sec, 0, time.UTC)
 }
+
+// SONG.VRx header timestamp offsets (§4.4): created at 0x14, last-saved at 0x1C.
+const (
+	songStampCreatedOff = 0x14
+	songStampSavedOff   = 0x1C
+)
+
+// decodeSongStamps decodes a SONG.VR5 header's created and last-saved timestamps
+// (§4.4) from its header bytes — the single home for those two field offsets,
+// shared by the HDD prologue (which reads the SONG file) and the CD layout (which
+// reads the byte-for-byte SONG.VR5 copy the catalog carries, §5.3), so the two
+// paths cannot drift. A header too short to hold a field — a VR9 20-byte header,
+// or a truncated VR5 one — yields the zero (absent) Time for it.
+func decodeSongStamps(header []byte) (created, saved time.Time) {
+	return decodeStamp(headerStamp(header, songStampCreatedOff)),
+		decodeStamp(headerStamp(header, songStampSavedOff))
+}
+
+// headerStamp returns the 8-byte timestamp slice at off, or nil when the header
+// is too short to contain it (decodeStamp maps nil to the absent zero Time).
+func headerStamp(header []byte, off int) []byte {
+	if len(header) < off+8 {
+		return nil
+	}
+	return header[off : off+8]
+}

@@ -155,21 +155,10 @@ func parseSongFile(data []byte) (songHeader, bool) {
 		rateByte:   data[0x12],
 		formatCode: data[0x13],
 	}
-	// VR5 (38-byte) headers carry the two timestamps; decodeStamp bounds-checks,
-	// so a header truncated between the two fields yields the earlier one and a
-	// zero later one.
-	h.created = decodeStamp(headerStamp(data, 0x14))
-	h.saved = decodeStamp(headerStamp(data, 0x1C))
+	// VR5 (38-byte) headers carry the two timestamps at 0x14/0x1C; the shared
+	// decoder bounds-checks, so a VR9 header (too short) yields the zero Time.
+	h.created, h.saved = decodeSongStamps(data)
 	return h, true
-}
-
-// headerStamp returns the 8-byte timestamp slice at off, or nil when the header
-// is too short to contain it (decodeStamp maps nil to the absent zero Time).
-func headerStamp(data []byte, off int) []byte {
-	if len(data) < off+8 {
-		return nil
-	}
-	return data[off : off+8]
 }
 
 // findHDDFile returns the entry with the given fixed base name (§4.3: "SONG",

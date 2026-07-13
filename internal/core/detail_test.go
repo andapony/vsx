@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andapony/vsx/internal/hddfix"
 	"github.com/andapony/vsx/internal/vsfix"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,6 +62,34 @@ func TestDetailPerVTrackRows(t *testing.T) {
 	assert.Equal(t, 1, def.Events)
 	assert.Equal(t, e1, def.First)
 	assert.Equal(t, e1, def.Last)
+}
+
+// TestDetailPerVTrackRowsHDD covers the HDD VR5 combo of the "all four
+// source/machine combinations" AC: the verbose view over an HDD image surfaces
+// the same per-v-track rows and event timestamps as the CD path (the enumeration
+// runs through the shared generic reducer, so both combos exercise one code path).
+func TestDetailPerVTrackRowsHDD(t *testing.T) {
+	e1 := time.Date(2001, 2, 27, 10, 0, 0, 0, time.UTC)
+	e2 := time.Date(2001, 2, 28, 11, 0, 0, 0, time.UTC)
+	disk := hddfix.Disk{Partitions: []hddfix.Partition{{Songs: []hddfix.Song{{
+		Number: 12, Name: "MIXDOWN", Ext: "VR5", Format: 0x05, Created: tsCreated, Saved: tsSaved,
+		Takes: []hddfix.Take{{NameCluster: 0x0100, Content: mtpBytes(8)}},
+		Events: []hddfix.Event{
+			{Start: 0, End: 4, NameCluster: 0x0100, Track: 1, VTrack: 1, Name: "Bass", Stamp: e1},
+			{Start: 4, End: 8, NameCluster: 0x0100, Track: 1, VTrack: 1, Name: "Bass", Stamp: e2},
+		},
+	}}}}}
+	details, devs := detailBytes(t, disk.Build(), Options{})
+	assert.Empty(t, devs)
+	require.Len(t, details, 1)
+	require.Len(t, details[0].Tracks, 1)
+	row := details[0].Tracks[0]
+	assert.Equal(t, 1, row.Track)
+	assert.Equal(t, 1, row.VTrack)
+	assert.Equal(t, 2, row.Events)
+	assert.Equal(t, 8, row.Frames)
+	assert.Equal(t, e1, row.First)
+	assert.Equal(t, e2, row.Last)
 }
 
 // TestDetailAgreesWithExtract locks the by-construction agreement (§8): the
