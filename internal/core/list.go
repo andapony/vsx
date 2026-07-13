@@ -19,6 +19,18 @@ type SongInfo struct {
 	VTracks      int    // populated v-track count
 	Frames       int    // timeline length in frames
 	SampleRate   int    // native sample rate in Hz, the divisor Duration uses
+
+	// Created and Saved are the SONG.VR5 header timestamps (§4.4): when the song
+	// was first created and last saved. They are the durable cross-media identity
+	// key for VR5 songs (§4.3). VR9 songs carry no timestamps anywhere (§4.4), so
+	// both are the zero Time there — rendered as the absent placeholder.
+	Created time.Time
+	Saved   time.Time
+	// Modified is the latest event-record timestamp across the song's timeline
+	// (§7): when the timeline was last actually edited, which can predate Saved
+	// (a re-save without edits bumps Saved but creates no event). Zero on VR9 and
+	// on a song with no stamped events.
+	Modified time.Time
 }
 
 // Duration is the song's timeline length as a wall-clock duration, applying the

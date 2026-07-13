@@ -1,6 +1,9 @@
 package vsfix
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"time"
+)
 
 // VR5Sig is the VS-1880 archive signature (§1/§5.2), 32 bytes.
 var VR5Sig = []byte("VS1880EXR06 Song Copy Archives  ")
@@ -49,10 +52,14 @@ type VR5VTrack struct {
 }
 
 // VR5Song is one VS-1880 song: its catalog number and name, the populated
-// V-track-table entries, and the take files they reference.
+// V-track-table entries, and the take files they reference. Created and Saved are
+// the SONG.VR5 header timestamps (§4.4); a zero time writes the all-zero (absent)
+// encoding.
 type VR5Song struct {
 	Number  uint16
 	Name    string
+	Created time.Time
+	Saved   time.Time
 	VTracks []VR5VTrack
 	Takes   []VR5Take
 }
@@ -135,13 +142,35 @@ func (s VR5Song) files() []vr5File {
 }
 
 // songFile encodes a 38-byte SONG.VR5 header (§4.4): the source folder number
-// (= the catalog number) at 0x04, the name at 0x06, and rate+format at 0x12–13.
+// (= the catalog number) at 0x04, the name at 0x06, rate+format at 0x12–13, and
+// the created/last-saved timestamps at 0x14/0x1C.
 func (s VR5Song) songFile() []byte {
 	b := make([]byte, 38)
 	binary.BigEndian.PutUint16(b[0x04:], s.Number)
 	copy(b[0x06:0x06+12], pad12(s.Name))
 	b[0x12] = 0x01 // rate 44.1 kHz (§3 low nibble)
 	b[0x13] = 0x05 // format MTP (§2)
+	copy(b[0x14:0x1C], encodeStamp(s.Created))
+	copy(b[0x1C:0x24], encodeStamp(s.Saved))
+	return b
+}
+
+// encodeStamp renders a time as the 8-byte §4.4 Roland timestamp
+// [ss,mm,hh,dow,dd,MM,yyyy(u16 BE)]. A zero time renders as all-zero bytes (the
+// "absent" encoding the reader maps back to no timestamp); the day-of-week byte
+// uses Roland's 1 = Saturday … 7 = Friday map, though the reader ignores it.
+func encodeStamp(t time.Time) []byte {
+	b := make([]byte, 8)
+	if t.IsZero() {
+		return b
+	}
+	b[0] = byte(t.Second())
+	b[1] = byte(t.Minute())
+	b[2] = byte(t.Hour())
+	b[3] = byte((int(t.Weekday())+1)%7 + 1)
+	b[4] = byte(t.Day())
+	b[5] = byte(t.Month())
+	binary.BigEndian.PutUint16(b[6:], uint16(t.Year()))
 	return b
 }
 

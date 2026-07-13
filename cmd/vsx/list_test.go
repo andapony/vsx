@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andapony/vsx/internal/core"
 	"github.com/stretchr/testify/assert"
@@ -33,9 +34,14 @@ func tabColumnStarts(line string) []int {
 // row must line up at the same tab stops for every column, with both single- and
 // double-digit v-track counts (the corpus has songs with 1 and with 54 v-tracks).
 func TestListHeaderSharesTabStopsWithRows(t *testing.T) {
+	// A VR9 row (placeholder timestamps) and a VR5 row (dated timestamps) so both
+	// the "-" and the full "yyyy-MM-dd hh:mm:ss" cases must share the header's tab
+	// stops for the wide CREATED/SAVED columns as well as the narrow ones.
+	stamp := time.Date(2001, 2, 27, 12, 34, 56, 0, time.UTC)
 	songs := []core.SongInfo{
 		{Key: core.SongKey{Ordinal: 1}, StoredNumber: 1, Machine: "VR9", VTracks: 1, Name: "SONG ONE"},
-		{Key: core.SongKey{Ordinal: 2}, StoredNumber: 2, Machine: "VR9", VTracks: 54, Name: "SONG TWO"},
+		{Key: core.SongKey{Ordinal: 2}, StoredNumber: 2, Machine: "VR5", VTracks: 54, Name: "SONG TWO",
+			Created: stamp, Saved: stamp},
 	}
 	var stdout, stderr bytes.Buffer
 	require.Equal(t, exitOK, runList(songs, nil, &stdout, &stderr))
@@ -61,8 +67,8 @@ func TestListFlagPrintsTabSeparatedCatalog(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
 	require.Len(t, lines, 2)
 	fields := strings.Split(lines[0], "\t")
-	require.Len(t, fields, 6)              // KEY SONG# MACHINE VTRK LENGTH NAME
+	require.Len(t, fields, 8)              // KEY SONG# MACHINE VTRK LENGTH CREATED SAVED NAME
 	assert.Equal(t, "1", fields[0])        // CD key = bare number
-	assert.Equal(t, "SONG ONE", fields[5]) // name last (twoSongTracerDisc song 1 is "SONG ONE")
+	assert.Equal(t, "SONG ONE", fields[7]) // name last (twoSongTracerDisc song 1 is "SONG ONE")
 	assert.NotContains(t, stdout, ".wav")  // nothing extracted
 }

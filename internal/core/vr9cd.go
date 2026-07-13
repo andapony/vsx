@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // VS-880EX header-block field offsets, from the block start (§5.4).
@@ -140,6 +141,12 @@ func (vr9) blocks(hdr []byte, _ fileEntry) int64 {
 // songNumber returns the source SONG number the VR9 header carries (§5.4).
 func (vr9) songNumber(_ cdSource, g songGroup, _ int) (int, []Deviation) {
 	return int(g.number), nil
+}
+
+// songStamps returns the zero pair: the VS-880EX carries no timestamps anywhere
+// (§4.4), so VR9 songs render the placeholder in both columns.
+func (vr9) songStamps(_ cdSource, _ songGroup) (created, saved time.Time) {
+	return time.Time{}, time.Time{}
 }
 
 // parseTimeline reduces a VS-880EX event log (§6.2/§8.2) to a machine-neutral

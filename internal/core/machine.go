@@ -1,5 +1,7 @@
 package core
 
+import "time"
+
 // cdLayout is the per-machine CD archive layout the one shared chain walk is
 // parameterized by (§5.4/§5.5). Its methods capture every respect in which the
 // VS-1880 (VR5) and VS-880EX (VR9) archives diverge — the header field offsets
@@ -46,6 +48,11 @@ type cdLayout interface {
 	// from the header, VR5 from the song's SONG file with a walk-order fallback
 	// (and a deviation) when no SONG file is present.
 	songNumber(img cdSource, g songGroup, index int) (int, []Deviation)
+	// songStamps decodes a song's created/last-saved timestamps (§4.4). VR5 reads
+	// them from its SONG file — the byte-for-byte SONG.VR5 copy the catalog carries
+	// (§5.3); VR9 has no timestamps anywhere and returns the zero pair. Absence (no
+	// SONG file, a short read) also yields zero, rendered as the placeholder.
+	songStamps(img cdSource, g songGroup) (created, saved time.Time)
 }
 
 // machineFormat is the seam behind which a recorder family's format sits
@@ -99,6 +106,12 @@ type parsedSong struct {
 	machine string
 	aud     audioSpec
 	st      songTimeline
+	// created and saved are the SONG.VR5 header timestamps (§4.4), zero on VR9
+	// (which stamps nothing) and on any prologue that could not read the header.
+	// Each source path decodes them where it reads the SONG header — HDD from the
+	// SONG file, CD from the layout's SONG copy — so both feed the one songInfo
+	// reduction below.
+	created, saved time.Time
 }
 
 // songInfo reduces a parsed song to the catalog entry List reports: identity,
@@ -113,6 +126,8 @@ func (ps parsedSong) songInfo() SongInfo {
 		Name:         ps.ref.Name,
 		Machine:      ps.machine,
 		SampleRate:   ps.aud.sampleRate,
+		Created:      ps.created,
+		Saved:        ps.saved,
 	}
 	info.VTracks, info.Frames = summarizeVTracks(ps.st)
 	return info

@@ -158,6 +158,7 @@ func extractCD(img cdSource, mf machineFormat, ctx extractCtx) (iter.Seq2[TrackR
 func parseCDSong(img cdSource, mf machineFormat, g songGroup, number int, key SongKey, ndevs []Deviation) (parsedSong, []Deviation) {
 	loc := fmt.Sprintf("song %d", number)
 	ps := parsedSong{ref: SongRef{Key: key, Number: number, Name: g.name}, machine: mf.machineName()}
+	ps.created, ps.saved = mf.songStamps(img, g)
 	devs := append([]Deviation{}, ndevs...)
 
 	elst, ok := findEventList(g.files)

@@ -4,7 +4,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
+	"time"
 )
+
+// vr5SongHeaderLen is the SONG.VR5 header length (§4.4): 38 bytes, enough to
+// cover the created (0x14) and last-saved (0x1C) timestamps songStamps reads.
+const vr5SongHeaderLen = 38
 
 // VS-1880 header-block field offsets, from the block start (§5.4). Unlike the
 // VS-880EX layout, the VR5 header block carries no source SONG number and no
@@ -180,6 +185,24 @@ func (vr5) accept(hdr []byte) bool {
 // headers carry no source SONG number, so it falls back to walk order.
 func (vr5) songNumber(img cdSource, g songGroup, index int) (int, []Deviation) {
 	return vr5SongNumber(img, g.files, index)
+}
+
+// songStamps decodes the created/last-saved timestamps from the song's SONG file
+// (§4.4) — on CD this is the byte-for-byte SONG.VR5 copy (§5.3), so the stamps
+// equal the on-disc song's for an unmodified archive. A missing or short SONG
+// file yields the zero pair, rendered as the placeholder.
+func (vr5) songStamps(img cdSource, g songGroup) (created, saved time.Time) {
+	for _, f := range g.files {
+		if !strings.HasPrefix(f.filename, "SONG") {
+			continue
+		}
+		content, err := img.ReadUserData(f.dataOff, vr5SongHeaderLen)
+		if err != nil {
+			break
+		}
+		return decodeStamp(headerStamp(content, 0x14)), decodeStamp(headerStamp(content, 0x1C))
+	}
+	return time.Time{}, time.Time{}
 }
 
 // parseTimeline reduces a VS-1880 V-track table (§6.1) to a machine-neutral

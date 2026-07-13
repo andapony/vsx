@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"iter"
 	"strings"
+	"time"
 
 	"github.com/andapony/vsx/internal/hdd"
 )
@@ -76,16 +77,17 @@ func parseHDDSong(song hdd.Song) (parsedSong, []hdd.Entry, []Deviation) {
 		return ps, files, []Deviation{{Location: song.Name, SpecRef: "§4.4", Severity: SeverityError,
 			Message: fmt.Sprintf("reading SONG file: %v", err)}}
 	}
-	number, name, rateByte, formatCode, ok := parseSongFile(sdata)
+	hdr, ok := parseSongFile(sdata)
 	if !ok {
 		return ps, files, []Deviation{{Location: song.Name, SpecRef: "§4.4", Severity: SeverityError,
 			Message: "SONG file shorter than its 20-byte header; cannot determine format or rate"}}
 	}
 
-	loc := fmt.Sprintf("song %d", number)
-	ps.ref = SongRef{Key: key, Number: number, Name: name}
-	sampleRate, rateDev := rateFromByte(rateByte, loc)
-	ps.aud = audioSpec{sampleRate: sampleRate, format: Format(formatCode), clusterSize: song.ClusterSize()}
+	loc := fmt.Sprintf("song %d", hdr.number)
+	ps.ref = SongRef{Key: key, Number: hdr.number, Name: hdr.name}
+	ps.created, ps.saved = hdr.created, hdr.saved
+	sampleRate, rateDev := rateFromByte(hdr.rateByte, loc)
+	ps.aud = audioSpec{sampleRate: sampleRate, format: Format(hdr.formatCode), clusterSize: song.ClusterSize()}
 
 	var devs []Deviation
 	if rateDev != nil {
@@ -126,17 +128,48 @@ func extractHDDSong(dec Decoder, song hdd.Song, stereo bool) ([]TrackResult, []D
 	return tracks, append(devs, tldevs...)
 }
 
-// parseSongFile reads the §4.4 SONG.VRx fields both machines share: the source
-// folder number at 0x04, the name at 0x06, and the rate/format bytes at
-// 0x12/0x13. VR9 is 20 bytes and VR5 38; only the shared 0x00–0x13 prefix is
-// needed. ok is false when the file is too short to hold that prefix.
-func parseSongFile(data []byte) (number int, name string, rateByte, formatCode byte, ok bool) {
+// songHeader is the parsed SONG.VRx header (§4.4). The number/name/rate/format
+// fields are shared by both machines; created/saved are the VR5-only timestamps
+// at 0x14/0x1C, left zero on the shorter VR9 header (which stamps nothing).
+type songHeader struct {
+	number         int
+	name           string
+	rateByte       byte
+	formatCode     byte
+	created, saved time.Time
+}
+
+// parseSongFile reads the §4.4 SONG.VRx fields: the source folder number at
+// 0x04, the name at 0x06, and the rate/format bytes at 0x12/0x13 — the shared
+// 0x00–0x13 prefix both machines carry — plus, when the header is long enough to
+// be a VR5 one (38 bytes), the created and last-saved timestamps at 0x14 and
+// 0x1C. VR9's 20-byte header is too short to hold them, so they stay zero. ok is
+// false when the file is too short to hold even the shared prefix.
+func parseSongFile(data []byte) (songHeader, bool) {
 	if len(data) < 0x14 {
-		return 0, "", 0, 0, false
+		return songHeader{}, false
 	}
-	number = int(binary.BigEndian.Uint16(data[0x04:]))
-	name = trimName(data[0x06:0x12])
-	return number, name, data[0x12], data[0x13], true
+	h := songHeader{
+		number:     int(binary.BigEndian.Uint16(data[0x04:])),
+		name:       trimName(data[0x06:0x12]),
+		rateByte:   data[0x12],
+		formatCode: data[0x13],
+	}
+	// VR5 (38-byte) headers carry the two timestamps; decodeStamp bounds-checks,
+	// so a header truncated between the two fields yields the earlier one and a
+	// zero later one.
+	h.created = decodeStamp(headerStamp(data, 0x14))
+	h.saved = decodeStamp(headerStamp(data, 0x1C))
+	return h, true
+}
+
+// headerStamp returns the 8-byte timestamp slice at off, or nil when the header
+// is too short to contain it (decodeStamp maps nil to the absent zero Time).
+func headerStamp(data []byte, off int) []byte {
+	if len(data) < off+8 {
+		return nil
+	}
+	return data[off : off+8]
 }
 
 // findHDDFile returns the entry with the given fixed base name (§4.3: "SONG",

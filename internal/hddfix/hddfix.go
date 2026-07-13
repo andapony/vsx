@@ -13,7 +13,10 @@
 // subdirectory entries and all file content are 16-bit byte-pair swapped.
 package hddfix
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"time"
+)
 
 const (
 	sectorSize = 512
@@ -59,13 +62,15 @@ type Event struct {
 // Song is one song subdirectory: its catalog number/name, machine extension,
 // rate+format bytes (SONG.VRx §4.4), timeline events, and take files.
 type Song struct {
-	Number uint16
-	Name   string
-	Ext    string // "VR5" or "VR9"
-	Rate   byte   // SONG.VRx 0x12 low nibble; 0 ⇒ 1 (44.1 kHz)
-	Format byte   // SONG.VRx 0x13 format code (§2)
-	Events []Event
-	Takes  []Take
+	Number  uint16
+	Name    string
+	Ext     string    // "VR5" or "VR9"
+	Rate    byte      // SONG.VRx 0x12 low nibble; 0 ⇒ 1 (44.1 kHz)
+	Format  byte      // SONG.VRx 0x13 format code (§2)
+	Created time.Time // SONG.VR5 0x14 timestamp (§4.4); VR5 only, zero ⇒ absent
+	Saved   time.Time // SONG.VR5 0x1C timestamp (§4.4); VR5 only, zero ⇒ absent
+	Events  []Event
+	Takes   []Take
 	// OmitEventList drops the EVENTLST.<ext> file from the song directory (§4.3),
 	// the "no event list; nothing to extract" deviation both List and Extract
 	// must report after the SONG header parses.
@@ -360,7 +365,8 @@ func (e dirEntry) bytes() []byte {
 }
 
 // songFile encodes SONG.VRx (§4.4): source folder number at 0x04, name at 0x06,
-// rate at 0x12, format at 0x13. VR9 is 20 bytes; VR5 is 38.
+// rate at 0x12, format at 0x13. VR9 is 20 bytes; VR5 is 38 and additionally
+// carries the created/last-saved timestamps at 0x14/0x1C.
 func (s Song) songFile() []byte {
 	n := 20
 	if s.Ext == "VR5" {
@@ -371,6 +377,29 @@ func (s Song) songFile() []byte {
 	copy(b[0x06:0x06+12], padName(s.Name, 12))
 	b[0x12] = s.rateByte()
 	b[0x13] = s.Format
+	if s.Ext == "VR5" {
+		copy(b[0x14:0x1C], encodeStamp(s.Created))
+		copy(b[0x1C:0x24], encodeStamp(s.Saved))
+	}
+	return b
+}
+
+// encodeStamp renders a time as the 8-byte §4.4 Roland timestamp
+// [ss,mm,hh,dow,dd,MM,yyyy(u16 BE)]. A zero time renders as all-zero bytes (the
+// "absent" encoding); the day-of-week byte uses Roland's 1 = Saturday … 7 =
+// Friday map, though the reader ignores it.
+func encodeStamp(t time.Time) []byte {
+	b := make([]byte, 8)
+	if t.IsZero() {
+		return b
+	}
+	b[0] = byte(t.Second())
+	b[1] = byte(t.Minute())
+	b[2] = byte(t.Hour())
+	b[3] = byte((int(t.Weekday())+1)%7 + 1)
+	b[4] = byte(t.Day())
+	b[5] = byte(t.Month())
+	binary.BigEndian.PutUint16(b[6:], uint16(t.Year()))
 	return b
 }
 
