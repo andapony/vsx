@@ -12,7 +12,10 @@ import (
 // (name last, so the variable-width field never breaks the columns), with the
 // header and any enumeration deviations on stderr. Returns the process exit code.
 func runList(songs []core.SongInfo, devs []core.Deviation, stdout, stderr io.Writer) int {
-	fmt.Fprintln(stderr, "KEY\tSONG#\tMACHINE\tV-TRACKS\tDURATION\tNAME")
+	// Header labels stay ≤7 chars so none fills a full 8-wide tab stop; an
+	// 8-char label (the old "V-TRACKS"/"DURATION") advances the next tab a whole
+	// stop past the data rows' tab, knocking every later column out of line (#33).
+	fmt.Fprintln(stderr, "KEY\tSONG#\tMACHINE\tVTRK\tLENGTH\tNAME")
 	for _, s := range songs {
 		fmt.Fprintf(stdout, "%s\t%d\t%s\t%d\t%s\t%s\n",
 			s.Key.String(), s.StoredNumber, s.Machine, s.VTracks, mmss(s.Duration()), s.Name)
