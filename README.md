@@ -47,8 +47,8 @@ the repository. CI runs the media-independent suite.
 
 `--list` prints the source's song catalog and exits without extracting
 anything: a tab-separated data row per song on stdout, with a header line
-(`KEY  SONG#  MACHINE  VTRK  LENGTH  CREATED  SAVED  NAME`) and any enumeration
-deviations on stderr.
+(`KEY  SONG#  MACHINE  VTRK  LENGTH  CREATED  SAVED  MODIFIED  NAME`) and any
+enumeration deviations on stderr.
 
 ```sh
 vsx --list image.hdd

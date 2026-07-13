@@ -1,6 +1,9 @@
 package core
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // samplesPerFrame is the RDAC framing constant: one frame is 16 samples (§3).
 const samplesPerFrame = 16
@@ -13,7 +16,8 @@ const samplesPerFrame = 16
 type timelineEvent struct {
 	start, end, trimmed uint32
 	fileID              uint16
-	clusterCount        uint16 // event 0x18: take cluster count, for the §8.3 HDD integrity check
+	clusterCount        uint16    // event 0x18: take cluster count, for the §8.3 HDD integrity check
+	stamp               time.Time // event 0x28: record creation time (§7, VR5 only); zero on VR9
 }
 
 // audioSpec is the per-song audio parameters that decode a take and describe its

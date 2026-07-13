@@ -41,7 +41,7 @@ func TestListHeaderSharesTabStopsWithRows(t *testing.T) {
 	songs := []core.SongInfo{
 		{Key: core.SongKey{Ordinal: 1}, StoredNumber: 1, Machine: "VR9", VTracks: 1, Name: "SONG ONE"},
 		{Key: core.SongKey{Ordinal: 2}, StoredNumber: 2, Machine: "VR5", VTracks: 54, Name: "SONG TWO",
-			Created: stamp, Saved: stamp},
+			Created: stamp, Saved: stamp, Modified: stamp},
 	}
 	var stdout, stderr bytes.Buffer
 	require.Equal(t, exitOK, runList(songs, nil, &stdout, &stderr))
@@ -67,8 +67,8 @@ func TestListFlagPrintsTabSeparatedCatalog(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
 	require.Len(t, lines, 2)
 	fields := strings.Split(lines[0], "\t")
-	require.Len(t, fields, 8)              // KEY SONG# MACHINE VTRK LENGTH CREATED SAVED NAME
+	require.Len(t, fields, 9)              // KEY SONG# MACHINE VTRK LENGTH CREATED SAVED MODIFIED NAME
 	assert.Equal(t, "1", fields[0])        // CD key = bare number
-	assert.Equal(t, "SONG ONE", fields[7]) // name last (twoSongTracerDisc song 1 is "SONG ONE")
+	assert.Equal(t, "SONG ONE", fields[8]) // name last (twoSongTracerDisc song 1 is "SONG ONE")
 	assert.NotContains(t, stdout, ".wav")  // nothing extracted
 }

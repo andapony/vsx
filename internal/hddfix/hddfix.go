@@ -52,11 +52,12 @@ type Take struct {
 // table for VR5, §4.6 flat log for VR9).
 type Event struct {
 	Start, End, Trimmed uint32
-	NameCluster         uint16 // event 0x14/0x16 take reference (= a Take.NameCluster)
-	Count               uint16 // event 0x18 cluster count; 0 ⇒ 1
-	Track, VTrack       int    // 1-based physical track / v-track
-	Tombstone           bool   // VR9 flag byte / erase (FileID 0 also erases)
-	Name                string // 12-char track/event name
+	NameCluster         uint16    // event 0x14/0x16 take reference (= a Take.NameCluster)
+	Count               uint16    // event 0x18 cluster count; 0 ⇒ 1
+	Track, VTrack       int       // 1-based physical track / v-track
+	Tombstone           bool      // VR9 flag byte / erase (FileID 0 also erases)
+	Name                string    // 12-char track/event name
+	Stamp               time.Time // event 0x28 record creation time (§7); VR5 record only
 }
 
 // Song is one song subdirectory: its catalog number/name, machine extension,
@@ -486,6 +487,7 @@ func (e Event) recordVR5(pos int) []byte {
 	r := make([]byte, 64)
 	e.writeCommon(r)
 	binary.BigEndian.PutUint16(r[0x22:], uint16(pos))
+	copy(r[0x28:0x30], encodeStamp(e.Stamp)) // record creation time (§7)
 	return r
 }
 

@@ -128,9 +128,29 @@ func (ps parsedSong) songInfo() SongInfo {
 		SampleRate:   ps.aud.sampleRate,
 		Created:      ps.created,
 		Saved:        ps.saved,
+		Modified:     latestEventStamp(ps.st),
 	}
 	info.VTracks, info.Frames = summarizeVTracks(ps.st)
 	return info
+}
+
+// latestEventStamp is the maximum event-record creation timestamp (§7) across a
+// song's whole timeline — its true "last modified" time, when the timeline was
+// last actually edited. This can predate the SONG.VR5 last-saved stamp: a re-save
+// without edits bumps saved but creates no event, so the corpus has archives
+// whose saved is months after the newest event. It is zero when no event carries
+// a stamp — VR9 records have no timestamp field, and a song with no events has
+// nothing to report — which the display layer renders as the placeholder.
+func latestEventStamp(st songTimeline) time.Time {
+	var latest time.Time
+	for _, g := range st.groups {
+		for _, e := range g.events {
+			if e.stamp.After(latest) {
+				latest = e.stamp
+			}
+		}
+	}
+	return latest
 }
 
 // formatFor resolves a detected machine identity to its behavior adapter — the

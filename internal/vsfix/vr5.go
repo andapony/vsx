@@ -36,10 +36,12 @@ type VR5Take struct {
 
 // VR5Event is one 64-byte VS-1880 V-track-table record (§7): a placement of a
 // take on the timeline. Frames are absolute (VR5 origin is 0, §3). FileID 0 is
-// an erase (writes silence).
+// an erase (writes silence). Stamp is the record creation time at 0x28 (§7); a
+// zero time writes the all-zero (absent) encoding.
 type VR5Event struct {
 	Start, End, Trimmed uint32
 	FileID              uint16
+	Stamp               time.Time
 }
 
 // VR5VTrack is one populated entry of the 288-entry V-track table (§6.1): the
@@ -223,6 +225,7 @@ func (e VR5Event) record(pos int) []byte {
 	binary.BigEndian.PutUint16(r[0x16:], e.FileID) // end cluster (solo)
 	binary.BigEndian.PutUint16(r[0x18:], 1)        // cluster count
 	binary.BigEndian.PutUint16(r[0x22:], uint16(pos))
+	copy(r[0x28:0x30], encodeStamp(e.Stamp)) // record creation time (§7)
 	return r
 }
 

@@ -17,12 +17,12 @@ func runList(songs []core.SongInfo, devs []core.Deviation, stdout, stderr io.Wri
 	// the data rows' tab, knocking every later column out of line (#33). The
 	// timestamp labels are instead padded to the fixed timestamp width so header
 	// and data reach the same tab stop for those wide columns too (§4.4/#34).
-	fmt.Fprintf(stderr, "KEY\tSONG#\tMACHINE\tVTRK\tLENGTH\t%s\t%s\tNAME\n",
-		padStamp("CREATED"), padStamp("SAVED"))
+	fmt.Fprintf(stderr, "KEY\tSONG#\tMACHINE\tVTRK\tLENGTH\t%s\t%s\t%s\tNAME\n",
+		padStamp("CREATED"), padStamp("SAVED"), padStamp("MODIFIED"))
 	for _, s := range songs {
-		fmt.Fprintf(stdout, "%s\t%d\t%s\t%d\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(stdout, "%s\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
 			s.Key.String(), s.StoredNumber, s.Machine, s.VTracks, mmss(s.Duration()),
-			padStamp(fmtStamp(s.Created)), padStamp(fmtStamp(s.Saved)), s.Name)
+			padStamp(fmtStamp(s.Created)), padStamp(fmtStamp(s.Saved)), padStamp(fmtStamp(s.Modified)), s.Name)
 	}
 	for _, d := range devs {
 		fmt.Fprintln(stderr, d)

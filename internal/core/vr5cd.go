@@ -137,6 +137,7 @@ func parseVR5EventList(data []byte) ([]vr5Entry, []Deviation) {
 				trimmed:      binary.BigEndian.Uint32(r[0x08:]),
 				fileID:       binary.BigEndian.Uint16(r[0x14:]),
 				clusterCount: binary.BigEndian.Uint16(r[0x18:]),
+				stamp:        decodeStamp(r[0x28 : 0x28+8]), // record creation time (§7)
 			})
 			off += vr5RecordSize
 		}
