@@ -121,6 +121,76 @@ func TestVR5MediaStructuralInvariants(t *testing.T) {
 	}
 }
 
+// assertNoStamps asserts a song carries no timestamps at all — the VR9 case
+// (§4.4: the VS-880EX stamps nothing anywhere), in any of the three columns.
+func assertNoStamps(t *testing.T, path string, s SongInfo) {
+	t.Helper()
+	assert.True(t, s.Created.IsZero() && s.Saved.IsZero() && s.Modified.IsZero(),
+		"%s: VR9 song %q must carry no timestamps (§4.4), got created=%v saved=%v modified=%v",
+		filepath.Base(path), s.Name, s.Created, s.Saved, s.Modified)
+}
+
+// TestVR5MediaTimestamps runs List over real VS-1880 media (VR5 CD dumps and the
+// HDD image, when VSX_TEST_MEDIA is set) and asserts the §4.4/§7 timestamp
+// invariants on genuine songs (#34/#35): a dated VR5 song's last-saved stamp is
+// present and not before its created stamp ("≥ created on all verified media",
+// §4.4), both fall in the spec's verified 2000–2018 range, and its latest event
+// (Modified) never postdates the save. Any VR9 song encountered on a mixed HDD
+// carries no stamps. This confirms the whole decode-and-thread slice against the
+// real media the AC cites — e.g. the vs-1880 partition-4 songs created 2001-02-27
+// and 2001-03-10.
+func TestVR5MediaTimestamps(t *testing.T) {
+	dir := testutil.RequireMedia(t)
+	paths := append(findDumps(t, dir, sigVR5), findHDDImages(t, dir)...)
+	if len(paths) == 0 {
+		t.Skipf("no VS-1880 media found under %s", dir)
+	}
+	dated := 0
+	for _, path := range paths {
+		songs, _, err := List(path, Options{})
+		require.NoError(t, err, path)
+		for _, s := range songs {
+			if s.Machine != "VR5" {
+				assertNoStamps(t, path, s) // a VR9 song on a mixed disk
+				continue
+			}
+			if s.Created.IsZero() {
+				continue // an empty/init VR5 song can be unstamped
+			}
+			dated++
+			require.False(t, s.Saved.IsZero(), "%s: song %q is created but not saved", filepath.Base(path), s.Name)
+			assert.False(t, s.Saved.Before(s.Created),
+				"%s: song %q saved %v precedes created %v (§4.4)", filepath.Base(path), s.Name, s.Saved, s.Created)
+			assert.GreaterOrEqual(t, s.Created.Year(), 2000, "%s: song %q created year plausible", filepath.Base(path), s.Name)
+			assert.LessOrEqual(t, s.Created.Year(), 2020, "%s: song %q created year plausible", filepath.Base(path), s.Name)
+			if !s.Modified.IsZero() {
+				assert.False(t, s.Saved.Before(s.Modified),
+					"%s: song %q last edit %v postdates save %v", filepath.Base(path), s.Name, s.Modified, s.Saved)
+			}
+		}
+	}
+	assert.Positive(t, dated, "at least one real VR5 song carries decoded timestamps")
+}
+
+// TestVR9MediaHasNoTimestamps confirms the placeholder path on real VS-880EX CD
+// media: VR9 stamps nothing anywhere (§4.4), so every listed song's created,
+// saved, and modified are the zero Time.
+func TestVR9MediaHasNoTimestamps(t *testing.T) {
+	dir := testutil.RequireMedia(t)
+	dumps := findDumps(t, dir, sigVR9)
+	if len(dumps) == 0 {
+		t.Skipf("no VS-880EX CD dumps found under %s", dir)
+	}
+	for _, path := range dumps {
+		songs, _, err := List(path, Options{})
+		require.NoError(t, err, path)
+		require.NotEmpty(t, songs, path)
+		for _, s := range songs {
+			assertNoStamps(t, path, s)
+		}
+	}
+}
+
 // findHDDImages returns the media-directory files that open as Roland VS live
 // disks — how the HDD media test locates real corpus images without hard-coding
 // filenames. hdd.Open succeeding (a partition BPB carries the "Roland  " OEM ID,
